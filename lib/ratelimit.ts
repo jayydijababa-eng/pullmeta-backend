@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 
-export type RateLimitAction = "extract" | "thumbnail";
+export type RateLimitAction = "extract" | "thumbnail" | "download";
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -11,10 +11,15 @@ export interface RateLimitResult {
 const LIMITS: Record<RateLimitAction, { max: number; windowMs: number }> = {
   extract: { max: 20, windowMs: 10 * 60 * 1000 }, // 20 per 10 min
   thumbnail: { max: 60, windowMs: 10 * 60 * 1000 }, // 60 per 10 min
+  download: { max: 5, windowMs: 10 * 60 * 1000 }, // 5 per 10 min
 };
 
 // In-memory sliding log storage
 const inMemoryStore = new Map<string, number[]>();
+
+export function resetRateLimitStore(): void {
+  inMemoryStore.clear();
+}
 
 // Lazily initialize Upstash Redis if env vars provided
 let redisClient: Redis | null = null;

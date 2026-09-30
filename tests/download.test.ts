@@ -1,0 +1,318 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { NextRequest } from "next/server";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { POST } from "../app/api/download/route";
+import * as downloadModule from "../lib/download";
+import { resetRateLimitStore } from "../lib/ratelimit";
+import {
+  sanitizeDownloadFilename,
+  getFormatSelector,
+  DownloadError,
+} from "../lib/download";
+
+describe("Download Service Unit Tests", () => {
+
+  describe("sanitizeDownloadFilename", () => {
+    it("handles regular video titles", () => {
+      const result = sanitizeDownloadFilename(
+        "Rick Astley - Never Gonna Give You Up",
+        "dQw4w9WgXcQ",
+        "1080p",
+        "mp4"
+      );
+      expect(result).toBe("Rick Astley - Never Gonna Give You Up.mp4");
+    });
+
+    it("strips path traversal and filesystem special characters", () => {
+      const result = sanitizeDownloadFilename(
+        "../../../etc/passwd:<>|*?file",
+        "dQw4w9WgXcQ",
+        "720p",
+        "mp4"
+      );
+      expect(result).not.toContain("..");
+      expect(result).not.toContain("/");
+      expect(result).not.toContain("\\");
+      expect(result).not.toContain(":");
+      expect(result).toBe("etcpasswdfile.mp4");
+    });
+
+    it("falls back to videoId-quality when title is null or empty", () => {
+      const result = sanitizeDownloadFilename("", "dQw4w9WgXcQ", "best", "mp4");
+      expect(result).toBe("dQw4w9WgXcQ-best.mp4");
+
+      const nullResult = sanitizeDownloadFilename(null, "dQw4w9WgXcQ", "best", "mp4");
+      expect(nullResult).toBe("dQw4w9WgXcQ-best.mp4");
+    });
+
+    it("truncates excessively long titles to 80 chars", () => {
+      const longTitle = "A".repeat(120);
+      const result = sanitizeDownloadFilename(longTitle, "dQw4w9WgXcQ", "1080p", "mp4");
+      expect(result.length).toBeLessThanOrEqual(85); // 80 chars + .mp4
+      expect(result).toBe(`${"A".repeat(80)}.mp4`);
+    });
+  });
+
+  describe("getFormatSelector", () => {
+    it("requires FFmpeg for 1080p, 1440p, and 2160p", () => {
+      const q1080 = getFormatSelector("1080p", true);
+      expect(q1080.requiresFfmpeg).toBe(true);
+      expect(q1080.selector).toContain("height=1080");
+
+      const q1440 = getFormatSelector("1440p", true);
+      expect(q1440.requiresFfmpeg).toBe(true);
+      expect(q1440.selector).toContain("height=1440");
+
+      const q2160 = getFormatSelector("2160p", true);
+      expect(q2160.requiresFfmpeg).toBe(true);
+      expect(q2160.selector).toContain("height=2160");
+    });
+
+    it("does not require FFmpeg for 720p and best", () => {
+      const q720Without = getFormatSelector("720p", false);
+      expect(q720Without.requiresFfmpeg).toBe(false);
+      expect(q720Without.selector).toContain("best[height=720]");
+
+      const qBestWithout = getFormatSelector("best", false);
+      expect(qBestWithout.requiresFfmpeg).toBe(false);
+      expect(qBestWithout.selector).toContain("best[ext=mp4]/best");
+    });
+  });
+});
+
+describe("POST /api/download Route Handler", () => {
+  const dummyFilePath = path.join(os.tmpdir(), "test-video-dummy.mp4");
+  const dummyTempDir = path.join(os.tmpdir(), "test-temp-dir");
+
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    resetRateLimitStore();
+    await fs.promises.mkdir(dummyTempDir, { recursive: true });
+    await fs.promises.writeFile(dummyFilePath, Buffer.from("dummy mp4 video content"));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    try {
+      await fs.promises.rm(dummyFilePath, { force: true });
+      await fs.promises.rm(dummyTempDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("successfully streams video for a valid YouTube URL and quality", async () => {
+    vi.spyOn(downloadModule, "executeDownload").mockResolvedValueOnce({
+      filePath: dummyFilePath,
+      tempDir: dummyTempDir,
+      fileName: "Test Video.mp4",
+      fileSize: 24,
+      contentType: "video/mp4",
+    });
+
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        quality: "1080p",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("video/mp4");
+    expect(res.headers.get("Content-Disposition")).toContain("Test Video.mp4");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(res.headers.get("Content-Length")).toBe("24");
+  });
+
+  it("returns INVALID_URL (400) for missing or invalid URL", async () => {
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({ url: "not-a-valid-url" }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("INVALID_URL");
+  });
+
+  it("returns INVALID_URL (400) for SSRF attempt with non-YouTube IP", async () => {
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({ url: "http://169.254.169.254/latest/meta-data" }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("INVALID_URL");
+    expect(data.error.message).toBe("Only YouTube links are supported.");
+  });
+
+  it("returns INVALID_URL (400) for unsupported video domain", async () => {
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({ url: "https://vimeo.com/12345678" }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("INVALID_URL");
+    expect(data.error.message).toBe("Only YouTube links are supported.");
+  });
+
+  it("returns INVALID_URL (400) for command injection payload in video ID", async () => {
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=;rm -rf /;test",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("INVALID_URL");
+  });
+
+  it("returns INVALID_URL (400) for unsupported quality parameter", async () => {
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        quality: "8k_hdr_ultra",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("INVALID_URL");
+    expect(data.error.message).toContain("Invalid quality option");
+  });
+
+  it("handles timeout error correctly (504 DOWNLOAD_TIMEOUT)", async () => {
+    vi.spyOn(downloadModule, "executeDownload").mockRejectedValueOnce(
+      new DownloadError("DOWNLOAD_TIMEOUT", "Video processing exceeded execution time limit.")
+    );
+
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        quality: "best",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(504);
+    const data = await res.json();
+    expect(data.error.code).toBe("DOWNLOAD_TIMEOUT");
+    expect(data.error.message).toContain("Video processing exceeded execution time limit");
+  });
+
+  it("handles file size exceeded error (413 DOWNLOAD_TOO_LARGE)", async () => {
+    vi.spyOn(downloadModule, "executeDownload").mockRejectedValueOnce(
+      new DownloadError("DOWNLOAD_TOO_LARGE", "The video file size exceeds the maximum allowed limit.")
+    );
+
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        quality: "2160p",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(413);
+    const data = await res.json();
+    expect(data.error.code).toBe("DOWNLOAD_TOO_LARGE");
+  });
+
+  it("handles unavailable quality or restricted video (404 DOWNLOAD_UNAVAILABLE)", async () => {
+    vi.spyOn(downloadModule, "executeDownload").mockRejectedValueOnce(
+      new DownloadError(
+        "DOWNLOAD_UNAVAILABLE",
+        "The requested quality (2160p) is not available for this video."
+      )
+    );
+
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        quality: "2160p",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error.code).toBe("DOWNLOAD_UNAVAILABLE");
+    expect(data.error.message).toContain("2160p");
+  });
+
+  it("handles general download failure safely without leaking stderr (500 DOWNLOAD_FAILED)", async () => {
+    vi.spyOn(downloadModule, "executeDownload").mockRejectedValueOnce(
+      new DownloadError(
+        "DOWNLOAD_FAILED",
+        "Failed to process video download. Please try again with a different quality or video."
+      )
+    );
+
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        quality: "720p",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const data = await res.json();
+    expect(data.error.code).toBe("DOWNLOAD_FAILED");
+    expect(data.error).not.toHaveProperty("stderr");
+    expect(data.error).not.toHaveProperty("stack");
+  });
+
+  it("enforces rate limit of 5 requests per 10 minutes", async () => {
+    vi.spyOn(downloadModule, "executeDownload").mockResolvedValue({
+      filePath: dummyFilePath,
+      tempDir: dummyTempDir,
+      fileName: "Test.mp4",
+      fileSize: 24,
+      contentType: "video/mp4",
+    });
+
+    // Make 5 requests from the same IP (192.168.1.100)
+    for (let i = 0; i < 5; i++) {
+      const req = new NextRequest("http://localhost:4000/api/download", {
+        method: "POST",
+        headers: { "x-forwarded-for": "192.168.1.100" },
+        body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+    }
+
+    // 6th request should be rate limited (429)
+    const blockedReq = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      headers: { "x-forwarded-for": "192.168.1.100" },
+      body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+    });
+
+    const blockedRes = await POST(blockedReq);
+    expect(blockedRes.status).toBe(429);
+    const blockedData = await blockedRes.json();
+    expect(blockedData.error.code).toBe("DOWNLOAD_RATE_LIMITED");
+    expect(blockedRes.headers.get("Retry-After")).toBeDefined();
+  });
+});

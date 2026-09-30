@@ -6,7 +6,12 @@ export type ErrorCode =
   | "THUMBNAIL_NOT_AVAILABLE"
   | "RATE_LIMITED"
   | "UPSTREAM_ERROR"
-  | "INTERNAL";
+  | "INTERNAL"
+  | "DOWNLOAD_FAILED"
+  | "DOWNLOAD_TIMEOUT"
+  | "DOWNLOAD_TOO_LARGE"
+  | "DOWNLOAD_UNAVAILABLE"
+  | "DOWNLOAD_RATE_LIMITED";
 
 export interface ErrorPayload {
   error: {
@@ -22,6 +27,11 @@ export const ERROR_STATUS_MAP: Record<ErrorCode, number> = {
   RATE_LIMITED: 429,
   UPSTREAM_ERROR: 502,
   INTERNAL: 500,
+  DOWNLOAD_FAILED: 500,
+  DOWNLOAD_TIMEOUT: 504,
+  DOWNLOAD_TOO_LARGE: 413,
+  DOWNLOAD_UNAVAILABLE: 404,
+  DOWNLOAD_RATE_LIMITED: 429,
 };
 
 export function createErrorResponse(
