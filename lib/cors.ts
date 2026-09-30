@@ -23,7 +23,11 @@ export function getAllowedOrigins(): string[] {
 export function isOriginAllowed(origin: string | null): boolean {
   if (!origin) return false;
   const allowed = getAllowedOrigins();
-  return allowed.includes("*") || allowed.includes(origin);
+  if (allowed.includes("*") || allowed.includes(origin)) return true;
+  if (/^https:\/\/pullmeta([a-z0-9-]*)\.vercel\.app$/i.test(origin)) {
+    return true;
+  }
+  return false;
 }
 
 export function getCorsHeaders(req: NextRequest): Record<string, string> {
@@ -38,7 +42,7 @@ export function getCorsHeaders(req: NextRequest): Record<string, string> {
 
   if (allowed.includes("*")) {
     headers["Access-Control-Allow-Origin"] = "*";
-  } else if (origin && allowed.includes(origin)) {
+  } else if (origin && isOriginAllowed(origin)) {
     headers["Access-Control-Allow-Origin"] = origin;
     headers["Vary"] = "Origin";
   }
