@@ -315,7 +315,25 @@ export async function executeDownload(
       `node:${process.execPath}`,
       "--remote-components",
       "ejs:github",
+      "--extractor-args",
+      "youtube:player_client=android,web;player_skip=configs,webpage",
     ];
+
+    if (process.env.YOUTUBE_PROXY) {
+      args.push("--proxy", process.env.YOUTUBE_PROXY);
+    } else if (process.env.HTTP_PROXY || process.env.HTTPS_PROXY) {
+      args.push("--proxy", (process.env.HTTPS_PROXY || process.env.HTTP_PROXY)!);
+    }
+
+    if (process.env.YOUTUBE_COOKIES) {
+      const cookiePath = path.join(tempDir, "cookies.txt");
+      let cookieContent = process.env.YOUTUBE_COOKIES;
+      if (cookieContent.startsWith("base64:")) {
+        cookieContent = Buffer.from(cookieContent.slice(7), "base64").toString("utf-8");
+      }
+      await fs.promises.writeFile(cookiePath, cookieContent, "utf-8");
+      args.push("--cookies", cookiePath);
+    }
 
     let expectedExt = "mp4";
     let defaultContentType = "video/mp4";
@@ -358,7 +376,7 @@ export async function executeDownload(
       let isSettled = false;
       let timedOut = false;
       let aborted = false;
-      let stderrOutput = "";
+      let outputBuffer = "";
 
       const child = spawn(ytDlpPath, args, {
         shell: false,
@@ -392,9 +410,15 @@ export async function executeDownload(
         }
       }
 
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (outputBuffer.length < 25000) {
+          outputBuffer += chunk.toString("utf-8");
+        }
+      });
+
       child.stderr?.on("data", (chunk: Buffer) => {
-        if (stderrOutput.length < 10000) {
-          stderrOutput += chunk.toString("utf-8");
+        if (outputBuffer.length < 25000) {
+          outputBuffer += chunk.toString("utf-8");
         }
       });
 
@@ -440,7 +464,22 @@ export async function executeDownload(
         }
 
         if (code !== 0) {
-          const lower = stderrOutput.toLowerCase();
+          const lower = outputBuffer.toLowerCase();
+
+          // Check max-filesize first before generic messages
+          if (
+            lower.includes("max-filesize") ||
+            lower.includes("file is larger than max-filesize") ||
+            lower.includes("is larger than max-filesize")
+          ) {
+            return reject(
+              new DownloadError(
+                "DOWNLOAD_TOO_LARGE",
+                `The file exceeds the maximum permitted serverless size (${maxFilesizeMb} MB). For long videos, try 360p, 480p, or Audio Only.`
+              )
+            );
+          }
+
           if (
             lower.includes("requested format is not available") ||
             lower.includes("format not available") ||
@@ -454,29 +493,20 @@ export async function executeDownload(
             );
           }
 
-          if (
-            lower.includes("sign in to confirm") ||
-            lower.includes("private video") ||
-            lower.includes("video unavailable") ||
-            lower.includes("members-only") ||
-            lower.includes("bot")
-          ) {
+          if (lower.includes("sign in to confirm") || lower.includes("bot")) {
             return reject(
               new DownloadError(
                 "DOWNLOAD_UNAVAILABLE",
-                "This video is private, restricted, or unavailable for download."
+                "YouTube has applied a bot/sign-in check on this cloud server for this video. Try selecting 360p or Audio, or a different video."
               )
             );
           }
 
-          if (
-            lower.includes("max-filesize") ||
-            lower.includes("file is larger than max-filesize")
-          ) {
+          if (lower.includes("private video") || lower.includes("members-only")) {
             return reject(
               new DownloadError(
-                "DOWNLOAD_TOO_LARGE",
-                `The file exceeds the maximum permitted file size (${maxFilesizeMb} MB).`
+                "DOWNLOAD_UNAVAILABLE",
+                "This video is private, members-only, or unavailable on YouTube."
               )
             );
           }
