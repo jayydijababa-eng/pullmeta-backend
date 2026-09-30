@@ -12,6 +12,11 @@ export function getAllowedOrigins(): string[] {
     }
   }
 
+  // Always permit the production frontend on Vercel
+  if (!envOrigins.includes("https://pullmeta.vercel.app")) {
+    envOrigins.push("https://pullmeta.vercel.app");
+  }
+
   return envOrigins;
 }
 
