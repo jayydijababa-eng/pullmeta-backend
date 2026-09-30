@@ -318,10 +318,6 @@ export async function executeDownload(
       "--no-warnings",
       "--no-progress",
       "--no-part",
-      "--js-runtimes",
-      `node:${process.execPath}`,
-      "--remote-components",
-      "ejs:github",
       "--extractor-args",
       "youtube:player_client=android,web;player_skip=configs,webpage",
     ];
@@ -527,10 +523,20 @@ export async function executeDownload(
             );
           }
 
+          console.error(`[PullMeta Download Error] exit code: ${code}, output: ${outputBuffer}`);
+          const errorLine =
+            outputBuffer
+              .split("\n")
+              .map((l) => l.trim())
+              .filter((l) => l.startsWith("ERROR:") || l.toLowerCase().includes("error:"))
+              .pop() || outputBuffer.slice(-250).trim();
+
           return reject(
             new DownloadError(
               "DOWNLOAD_FAILED",
-              "Failed to process media download. Please try again with a different format or quality."
+              errorLine
+                ? `Download failed: ${errorLine}`
+                : "Failed to process media download. Please try again with a different format or quality."
             )
           );
         }
