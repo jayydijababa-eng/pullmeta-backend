@@ -20,7 +20,7 @@ USER user
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH \
     NODE_ENV=production \
-    PORT=7860 \
+    PORT=10000 \
     HOSTNAME=0.0.0.0 \
     MAX_FILE_SIZE_BYTES=5368709120 \
     DOWNLOAD_TIMEOUT_MS=600000 \
@@ -40,8 +40,8 @@ COPY --chown=user:user . .
 # Build Next.js application
 RUN npm run build
 
-# Expose standard Hugging Face Spaces port
-EXPOSE 7860
+# Expose standard ports (Render defaults to 10000, Hugging Face to 7860)
+EXPOSE 10000 7860
 
-# Start Next.js server
-CMD ["npx", "next", "start", "-p", "7860", "-H", "0.0.0.0"]
+# Start Next.js server on the configured $PORT
+CMD ["sh", "-c", "npx next start -p ${PORT:-10000} -H 0.0.0.0"]
