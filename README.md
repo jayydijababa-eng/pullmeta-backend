@@ -55,7 +55,7 @@ Health check endpoint returning `{ "ok": true }`.
 ## Environment Variables
 
 - `YOUTUBE_API_KEY`: Server-only Google Cloud API key for YouTube Data API v3.
-- `ALLOWED_ORIGIN`: Allowed origins for CORS (comma-separated, e.g. `http://localhost:3000,https://pullmeta.vercel.app`).
+- `ALLOWED_ORIGIN`: Allowed origins for CORS (comma-separated, e.g. `https://pullmeta.vercel.app`).
 - `UPSTASH_REDIS_REST_URL`: (Optional) Upstash Redis endpoint for distributed rate-limiting.
 - `UPSTASH_REDIS_REST_TOKEN`: (Optional) Upstash Redis authentication token.
 
