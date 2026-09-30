@@ -1,9 +1,9 @@
-# PullMeta Backend - Dockerfile for Hugging Face Spaces & Container Hosting
+# PullMeta Backend - Dockerfile for Render, Hugging Face Spaces & Container Hosting
 # Includes Node.js 20, Python 3, FFmpeg, and yt-dlp
 
 FROM node:20-bookworm-slim
 
-# Install system dependencies: ffmpeg, python3, curl
+# Install system dependencies: ffmpeg, python3, curl, ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
@@ -13,12 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && chmod a+rx /usr/local/bin/yt-dlp \
  && rm -rf /var/lib/apt/lists/*
 
-# Hugging Face Spaces requires non-root user with UID 1000
-RUN useradd -m -u 1000 user
-
-USER user
-ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH \
+# The official node:20 image already provides the user 'node' with UID 1000
+USER node
+ENV HOME=/home/node \
+    PATH=/home/node/.local/bin:$PATH \
     NODE_ENV=production \
     PORT=10000 \
     HOSTNAME=0.0.0.0 \
@@ -26,16 +24,16 @@ ENV HOME=/home/user \
     DOWNLOAD_TIMEOUT_MS=600000 \
     MAX_CONCURRENT_DOWNLOADS=5
 
-WORKDIR $HOME/app
+WORKDIR /home/node/app
 
 # Copy dependency manifests
-COPY --chown=user:user package*.json ./
+COPY --chown=node:node package*.json ./
 
 # Install production dependencies
 RUN npm ci || npm install
 
 # Copy application source code
-COPY --chown=user:user . .
+COPY --chown=node:node . .
 
 # Build Next.js application
 RUN npm run build
