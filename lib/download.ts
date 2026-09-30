@@ -37,8 +37,13 @@ export const VALID_AUDIO_QUALITIES: AudioQuality[] = ["320", "256", "192", "128"
 // Export for backwards compatibility
 export const VALID_QUALITIES = VALID_VIDEO_QUALITIES;
 
-export const DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
-export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 50 * 1000; // 50 seconds (fits Vercel Hobby 60s limit)
+export const DEFAULT_MAX_FILE_SIZE = process.env.MAX_FILE_SIZE_BYTES
+  ? parseInt(process.env.MAX_FILE_SIZE_BYTES, 10)
+  : 100 * 1024 * 1024; // 100 MB default (for Vercel), can be set up to 5GB+ on Docker
+
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = process.env.DOWNLOAD_TIMEOUT_MS
+  ? parseInt(process.env.DOWNLOAD_TIMEOUT_MS, 10)
+  : 50 * 1000; // 50 seconds default (for Vercel), can be set up to 10m on Docker
 
 export class DownloadError extends Error {
   code: ErrorCode;
@@ -49,9 +54,11 @@ export class DownloadError extends Error {
   }
 }
 
-// In-memory concurrency limiter (max 2 concurrent downloads per serverless instance)
+// In-memory concurrency limiter (defaults to 2 for serverless, configurable on Docker)
 let activeDownloads = 0;
-const MAX_CONCURRENT_DOWNLOADS = 2;
+const MAX_CONCURRENT_DOWNLOADS = process.env.MAX_CONCURRENT_DOWNLOADS
+  ? parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10)
+  : 2;
 
 export function acquireDownloadSlot(): boolean {
   if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
