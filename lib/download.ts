@@ -319,7 +319,7 @@ export async function executeDownload(
       "--no-progress",
       "--no-part",
       "--extractor-args",
-      "youtube:player_client=android,web;player_skip=configs,webpage",
+      "youtube:player_client=ios,android,web",
     ];
 
     if (process.env.YOUTUBE_PROXY) {
