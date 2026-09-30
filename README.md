@@ -59,10 +59,11 @@ Health check endpoint returning `{ "ok": true }`.
 - `UPSTASH_REDIS_REST_URL`: (Optional) Upstash Redis endpoint for distributed rate-limiting.
 - `UPSTASH_REDIS_REST_TOKEN`: (Optional) Upstash Redis authentication token.
 
-## Local Development
-
 ```bash
 npm install
 npm test
 npm run dev # Starts on port 4000
 ```
+
+## Production Deployment
+Deploy with Root Directory set to `backend` on Vercel.
