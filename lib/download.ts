@@ -6,15 +6,36 @@ import { spawn } from "node:child_process";
 import { ErrorCode } from "@/lib/errors";
 import { getYtDlpPath, getFfmpegPath } from "@/lib/binaries";
 
-export type DownloadQuality = "best" | "2160p" | "1440p" | "1080p" | "720p";
+export type DownloadType = "video" | "audio";
+export type VideoQuality =
+  | "best"
+  | "2160p"
+  | "1440p"
+  | "1080p"
+  | "720p"
+  | "480p"
+  | "360p";
+export type AudioFormat = "mp3" | "m4a" | "wav" | "webm";
+export type AudioQuality = "320" | "256" | "192" | "128" | "best";
 
-export const VALID_QUALITIES: DownloadQuality[] = [
+// Backwards-compatible type alias
+export type DownloadQuality = VideoQuality | string;
+
+export const VALID_VIDEO_QUALITIES: VideoQuality[] = [
   "best",
   "2160p",
   "1440p",
   "1080p",
   "720p",
+  "480p",
+  "360p",
 ];
+
+export const VALID_AUDIO_FORMATS: AudioFormat[] = ["mp3", "m4a", "wav", "webm"];
+export const VALID_AUDIO_QUALITIES: AudioQuality[] = ["320", "256", "192", "128", "best"];
+
+// Export for backwards compatibility
+export const VALID_QUALITIES = VALID_VIDEO_QUALITIES;
 
 export const DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 50 * 1000; // 50 seconds (fits Vercel Hobby 60s limit)
@@ -49,71 +70,145 @@ export function getActiveDownloadsCount(): number {
 }
 
 /**
- * Returns format selector and whether FFmpeg is required for the chosen quality.
+ * Returns format selector for video downloads.
+ * Explicitly requires vcodec!=none to NEVER download an audio-only stream.
  */
-export function getFormatSelector(
-  quality: DownloadQuality,
+export function getVideoFormatSelector(
+  quality: string,
   hasFfmpeg: boolean
 ): { selector: string; requiresFfmpeg: boolean } {
-  switch (quality) {
-    case "2160p":
+  const heightMap: Record<string, number> = {
+    "2160p": 2160,
+    "1440p": 1440,
+    "1080p": 1080,
+    "720p": 720,
+    "480p": 480,
+    "360p": 360,
+  };
+
+  const targetHeight = heightMap[quality.toLowerCase()];
+
+  if (targetHeight) {
+    if (hasFfmpeg) {
       return {
         requiresFfmpeg: true,
-        selector:
-          "bestvideo[height=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=2160]+bestaudio/best[height=2160]",
+        selector: `bestvideo[height<=${targetHeight}][ext=mp4][vcodec!=none]+bestaudio[ext=m4a][acodec!=none]/bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]`,
       };
-    case "1440p":
-      return {
-        requiresFfmpeg: true,
-        selector:
-          "bestvideo[height=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1440]+bestaudio/best[height=1440]",
-      };
-    case "1080p":
-      return {
-        requiresFfmpeg: true,
-        selector:
-          "bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/best[height=1080]",
-      };
-    case "720p":
+    }
+    return {
+      requiresFfmpeg: false,
+      selector: `best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]`,
+    };
+  }
+
+  // "best" or default
+  if (hasFfmpeg) {
+    return {
+      requiresFfmpeg: false,
+      selector: `bestvideo[ext=mp4][vcodec!=none]+bestaudio[ext=m4a][acodec!=none]/bestvideo[vcodec!=none]+bestaudio[acodec!=none]/best[vcodec!=none][acodec!=none]/best[vcodec!=none]`,
+    };
+  }
+  return {
+    requiresFfmpeg: false,
+    selector: `best[vcodec!=none][acodec!=none]/best[vcodec!=none]`,
+  };
+}
+
+export const getFormatSelector = getVideoFormatSelector;
+
+/**
+ * Returns configuration for audio downloads (MP3, M4A, WAV, WEBM).
+ */
+export function getAudioFormatConfig(
+  format: string = "mp3",
+  quality: string = "best",
+  hasFfmpeg: boolean
+): {
+  args: string[];
+  ext: string;
+  contentType: string;
+} {
+  const normFormat = (format || "mp3").toLowerCase();
+  const normQuality = (quality || "best").toLowerCase();
+
+  const audioQualityBitrateMap: Record<string, string> = {
+    "320": "320k",
+    "256": "256k",
+    "192": "192k",
+    "128": "128k",
+    "best": "0",
+  };
+
+  const bitrateArg = audioQualityBitrateMap[normQuality] || "0";
+
+  switch (normFormat) {
+    case "m4a":
       if (hasFfmpeg) {
         return {
-          requiresFfmpeg: false,
-          selector:
-            "bestvideo[height=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=720]+bestaudio/best[height=720][ext=mp4]/best[height=720]",
+          args: ["-f", "ba[ext=m4a]/ba", "-x", "--audio-format", "m4a"],
+          ext: "m4a",
+          contentType: "audio/mp4",
         };
       }
       return {
-        requiresFfmpeg: false,
-        selector: "best[height=720][ext=mp4]/best[height=720]",
+        args: ["-f", "ba[ext=m4a]/ba"],
+        ext: "m4a",
+        contentType: "audio/mp4",
       };
-    case "best":
+
+    case "wav":
+      return {
+        args: ["-f", "ba", "-x", "--audio-format", "wav"],
+        ext: "wav",
+        contentType: "audio/wav",
+      };
+
+    case "webm":
+    case "opus":
+      return {
+        args: ["-f", "ba[ext=webm]/ba", "-x", "--audio-format", "opus"],
+        ext: "webm",
+        contentType: "audio/webm",
+      };
+
+    case "mp3":
     default:
       if (hasFfmpeg) {
         return {
-          requiresFfmpeg: false,
-          selector:
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+          args: [
+            "-f",
+            "ba",
+            "-x",
+            "--audio-format",
+            "mp3",
+            "--audio-quality",
+            bitrateArg,
+          ],
+          ext: "mp3",
+          contentType: "audio/mpeg",
         };
       }
+      // If FFmpeg is unavailable, fall back to native AAC m4a audio stream
       return {
-        requiresFfmpeg: false,
-        selector: "best[ext=mp4]/best",
+        args: ["-f", "ba[ext=m4a]/ba"],
+        ext: "m4a",
+        contentType: "audio/mp4",
       };
   }
 }
 
 /**
- * Generates a safe, sanitized filename from the video title.
+ * Generates a safe, sanitized filename from the title.
  * Strips path traversal characters, control characters, and reserved filesystem symbols.
  */
 export function sanitizeDownloadFilename(
   title: string | undefined | null,
   videoId: string,
-  quality: string,
+  qualityOrFormat: string,
   ext: string = "mp4"
 ): string {
   if (!title || typeof title !== "string") {
-    return `${videoId}-${quality}.${ext}`;
+    return `${videoId}-${qualityOrFormat}.${ext}`;
   }
 
   // Remove illegal characters, path traversal indicators, and control chars
@@ -129,7 +224,7 @@ export function sanitizeDownloadFilename(
 
   // Fallback if empty or period only
   if (!clean || clean === ".") {
-    clean = `${videoId}-${quality}`;
+    clean = `${videoId}-${qualityOrFormat}`;
   }
 
   // Truncate length to maximum 80 characters
@@ -140,7 +235,7 @@ export function sanitizeDownloadFilename(
   // Remove any remaining trailing/leading dots or spaces after truncation
   clean = clean.replace(/^[./\\]+/, "").replace(/[./\\]+$/, "");
   if (!clean) {
-    clean = `${videoId}-${quality}`;
+    clean = `${videoId}-${qualityOrFormat}`;
   }
 
   return `${clean}.${ext}`;
@@ -160,7 +255,10 @@ export async function cleanupDirectory(dirPath: string): Promise<void> {
 
 export interface ExecuteDownloadOptions {
   videoId: string;
-  quality: DownloadQuality;
+  type?: DownloadType;
+  quality?: string;
+  format?: string;
+  audioQuality?: string;
   timeoutMs?: number;
   maxSizeBytes?: number;
   abortSignal?: AbortSignal;
@@ -182,7 +280,10 @@ export async function executeDownload(
 ): Promise<DownloadResult> {
   const {
     videoId,
-    quality,
+    type = "video",
+    quality = "best",
+    format = "mp3",
+    audioQuality = "best",
     timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
     maxSizeBytes = DEFAULT_MAX_FILE_SIZE,
     abortSignal,
@@ -202,16 +303,7 @@ export async function executeDownload(
     const ytDlpPath = await getYtDlpPath();
     const ffmpegPath = await getFfmpegPath();
 
-    const formatInfo = getFormatSelector(quality, !!ffmpegPath);
-
-    if (formatInfo.requiresFfmpeg && !ffmpegPath) {
-      throw new DownloadError(
-        "DOWNLOAD_UNAVAILABLE",
-        `Quality ${quality} requires video and audio stream merging with FFmpeg, which is not available in this environment.`
-      );
-    }
-
-    const outputTemplate = path.join(tempDir, "video.%(ext)s");
+    const outputTemplate = path.join(tempDir, "media.%(ext)s");
     const maxFilesizeMb = Math.max(1, Math.floor(maxSizeBytes / (1024 * 1024)));
 
     const args: string[] = [
@@ -223,22 +315,44 @@ export async function executeDownload(
       `node:${process.execPath}`,
       "--remote-components",
       "ejs:github",
-      "-f",
-      formatInfo.selector,
+    ];
+
+    let expectedExt = "mp4";
+    let defaultContentType = "video/mp4";
+
+    if (type === "audio") {
+      const audioConfig = getAudioFormatConfig(format, audioQuality, !!ffmpegPath);
+      args.push(...audioConfig.args);
+      expectedExt = audioConfig.ext;
+      defaultContentType = audioConfig.contentType;
+    } else {
+      const formatInfo = getVideoFormatSelector(quality, !!ffmpegPath);
+      if (formatInfo.requiresFfmpeg && !ffmpegPath) {
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          `Quality ${quality} requires video and audio stream merging with FFmpeg, which is not available in this environment.`
+        );
+      }
+      args.push("-f", formatInfo.selector);
+      if (ffmpegPath) {
+        args.push("--merge-output-format", "mp4");
+      }
+      expectedExt = "mp4";
+      defaultContentType = "video/mp4";
+    }
+
+    if (ffmpegPath) {
+      args.push("--ffmpeg-location", ffmpegPath);
+    }
+
+    args.push(
       "--max-filesize",
       `${maxFilesizeMb}M`,
       "-o",
       outputTemplate,
       "--write-info-json",
-    ];
-
-    if (ffmpegPath) {
-      args.push("--ffmpeg-location", ffmpegPath);
-      args.push("--merge-output-format", "mp4");
-    }
-
-    // Pass strict, normalized YouTube URL
-    args.push(`https://www.youtube.com/watch?v=${videoId}`);
+      `https://www.youtube.com/watch?v=${videoId}`
+    );
 
     await new Promise<void>((resolve, reject) => {
       let isSettled = false;
@@ -284,7 +398,7 @@ export async function executeDownload(
         }
       });
 
-      child.on("error", (err) => {
+      child.on("error", () => {
         if (isSettled) return;
         isSettled = true;
         clearTimeout(timer);
@@ -311,7 +425,7 @@ export async function executeDownload(
           return reject(
             new DownloadError(
               "DOWNLOAD_TIMEOUT",
-              "Video processing exceeded execution time limit. For long videos, try a lower quality."
+              "Media processing exceeded execution time limit. For long videos or high quality, try a lower quality."
             )
           );
         }
@@ -335,7 +449,7 @@ export async function executeDownload(
             return reject(
               new DownloadError(
                 "DOWNLOAD_UNAVAILABLE",
-                `The requested quality (${quality}) is not available for this video.`
+                `The requested ${type} quality or format is not available for this video.`
               )
             );
           }
@@ -362,7 +476,7 @@ export async function executeDownload(
             return reject(
               new DownloadError(
                 "DOWNLOAD_TOO_LARGE",
-                `The video file exceeds the maximum permitted file size (${maxFilesizeMb} MB).`
+                `The file exceeds the maximum permitted file size (${maxFilesizeMb} MB).`
               )
             );
           }
@@ -371,7 +485,7 @@ export async function executeDownload(
             return reject(
               new DownloadError(
                 "DOWNLOAD_TIMEOUT",
-                "Network timeout occurred while fetching the video."
+                "Network timeout occurred while fetching the media."
               )
             );
           }
@@ -379,7 +493,7 @@ export async function executeDownload(
           return reject(
             new DownloadError(
               "DOWNLOAD_FAILED",
-              "Failed to process video download. Please try again with a different quality or video."
+              "Failed to process media download. Please try again with a different format or quality."
             )
           );
         }
@@ -397,7 +511,7 @@ export async function executeDownload(
     if (!mediaFile) {
       throw new DownloadError(
         "DOWNLOAD_FAILED",
-        "Video file could not be generated."
+        `${type === "audio" ? "Audio" : "Video"} file could not be generated.`
       );
     }
 
@@ -407,21 +521,21 @@ export async function executeDownload(
     if (stat.size === 0) {
       throw new DownloadError(
         "DOWNLOAD_FAILED",
-        "Downloaded video file is empty."
+        "Downloaded file is empty."
       );
     }
 
     if (stat.size > maxSizeBytes) {
       throw new DownloadError(
         "DOWNLOAD_TOO_LARGE",
-        `The video file size (${Math.round(stat.size / (1024 * 1024))} MB) exceeds the maximum allowed limit.`
+        `The file size (${Math.round(stat.size / (1024 * 1024))} MB) exceeds the maximum allowed limit.`
       );
     }
 
     // Read metadata title if written
     let videoTitle = "";
     try {
-      const infoJsonPath = path.join(tempDir, "video.info.json");
+      const infoJsonPath = path.join(tempDir, "media.info.json");
       if (fs.existsSync(infoJsonPath)) {
         const rawJson = await fs.promises.readFile(infoJsonPath, "utf-8");
         const parsed = JSON.parse(rawJson);
@@ -431,14 +545,29 @@ export async function executeDownload(
       // Ignore metadata parsing error
     }
 
-    const ext = path.extname(mediaFile).replace(/^\./, "").toLowerCase() || "mp4";
+    const ext =
+      path.extname(mediaFile).replace(/^\./, "").toLowerCase() || expectedExt;
+
+    const qualityLabel =
+      type === "audio"
+        ? format.toLowerCase() === "mp3" && audioQuality !== "best"
+          ? `${audioQuality}kbps`
+          : format.toUpperCase()
+        : quality;
+
     const safeFileName = sanitizeDownloadFilename(
       videoTitle,
       videoId,
-      quality,
+      qualityLabel,
       ext
     );
-    const contentType = ext === "webm" ? "video/webm" : "video/mp4";
+
+    let contentType = defaultContentType;
+    if (ext === "mp3") contentType = "audio/mpeg";
+    else if (ext === "m4a") contentType = "audio/mp4";
+    else if (ext === "wav") contentType = "audio/wav";
+    else if (ext === "webm") contentType = type === "audio" ? "audio/webm" : "video/webm";
+    else if (ext === "mp4") contentType = "video/mp4";
 
     return {
       filePath: mediaFilePath,

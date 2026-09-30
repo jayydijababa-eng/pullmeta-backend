@@ -59,25 +59,47 @@ describe("Download Service Unit Tests", () => {
     it("requires FFmpeg for 1080p, 1440p, and 2160p", () => {
       const q1080 = getFormatSelector("1080p", true);
       expect(q1080.requiresFfmpeg).toBe(true);
-      expect(q1080.selector).toContain("height=1080");
+      expect(q1080.selector).toContain("1080");
 
       const q1440 = getFormatSelector("1440p", true);
       expect(q1440.requiresFfmpeg).toBe(true);
-      expect(q1440.selector).toContain("height=1440");
+      expect(q1440.selector).toContain("1440");
 
       const q2160 = getFormatSelector("2160p", true);
       expect(q2160.requiresFfmpeg).toBe(true);
-      expect(q2160.selector).toContain("height=2160");
+      expect(q2160.selector).toContain("2160");
     });
 
-    it("does not require FFmpeg for 720p and best", () => {
+    it("does not require FFmpeg for 720p and best without ffmpeg", () => {
       const q720Without = getFormatSelector("720p", false);
       expect(q720Without.requiresFfmpeg).toBe(false);
-      expect(q720Without.selector).toContain("best[height=720]");
+      expect(q720Without.selector).toContain("720");
 
       const qBestWithout = getFormatSelector("best", false);
       expect(qBestWithout.requiresFfmpeg).toBe(false);
-      expect(qBestWithout.selector).toContain("best[ext=mp4]/best");
+      expect(qBestWithout.selector).toContain("vcodec!=none");
+    });
+  });
+
+  describe("getAudioFormatConfig", () => {
+    it("configures MP3 extraction with specified bitrates", () => {
+      const mp3_320 = downloadModule.getAudioFormatConfig("mp3", "320", true);
+      expect(mp3_320.ext).toBe("mp3");
+      expect(mp3_320.contentType).toBe("audio/mpeg");
+      expect(mp3_320.args).toContain("320k");
+
+      const mp3_128 = downloadModule.getAudioFormatConfig("mp3", "128", true);
+      expect(mp3_128.args).toContain("128k");
+    });
+
+    it("configures M4A and WAV formats correctly", () => {
+      const m4a = downloadModule.getAudioFormatConfig("m4a", "best", true);
+      expect(m4a.ext).toBe("m4a");
+      expect(m4a.contentType).toBe("audio/mp4");
+
+      const wav = downloadModule.getAudioFormatConfig("wav", "best", true);
+      expect(wav.ext).toBe("wav");
+      expect(wav.contentType).toBe("audio/wav");
     });
   });
 });

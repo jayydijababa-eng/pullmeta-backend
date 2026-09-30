@@ -131,7 +131,41 @@ export async function getFfmpegPath(): Promise<string | null> {
     // Not found in system PATH
   }
 
-  // 4. Temporary binary cache in /tmp/pullmeta-bin
+  // 4. @ffmpeg-installer package binary on disk (Turbopack build-safe, avoids dynamic require)
+  const installerPlatform = `${process.platform}-${process.arch}`;
+  const installerBinPath = path.join(
+    process.cwd(),
+    "node_modules",
+    "@ffmpeg-installer",
+    installerPlatform,
+    binName
+  );
+
+  if (fs.existsSync(/*turbopackIgnore: true*/ installerBinPath)) {
+    if (process.platform !== "win32") {
+      try {
+        fs.chmodSync(installerBinPath, 0o755);
+        cachedFfmpegPath = installerBinPath;
+        return cachedFfmpegPath;
+      } catch {
+        // If filesystem is read-only (e.g. AWS Lambda / Vercel /var/task), copy to /tmp and chmod
+        const tmpBinDir = path.join(os.tmpdir(), "pullmeta-bin");
+        await fs.promises.mkdir(tmpBinDir, { recursive: true });
+        const tmpFfmpegPath = path.join(tmpBinDir, "ffmpeg");
+        if (!fs.existsSync(tmpFfmpegPath)) {
+          await fs.promises.copyFile(installerBinPath, tmpFfmpegPath);
+        }
+        fs.chmodSync(tmpFfmpegPath, 0o755);
+        cachedFfmpegPath = tmpFfmpegPath;
+        return cachedFfmpegPath;
+      }
+    } else {
+      cachedFfmpegPath = installerBinPath;
+      return cachedFfmpegPath;
+    }
+  }
+
+  // 5. Temporary binary cache in /tmp/pullmeta-bin
   const tmpBinDir = path.join(os.tmpdir(), "pullmeta-bin");
   const tmpBinPath = path.join(tmpBinDir, binName);
   if (fs.existsSync(/*turbopackIgnore: true*/ tmpBinPath)) {
@@ -146,7 +180,7 @@ export async function getFfmpegPath(): Promise<string | null> {
     }
   }
 
-  // 5. On Linux x64 in serverless (e.g. Vercel), fetch gzipped static ffmpeg if needed
+  // 6. On Linux x64 in serverless (e.g. Vercel), fetch gzipped static ffmpeg if needed
   if (process.platform === "linux" && process.arch === "x64") {
     try {
       await fs.promises.mkdir(tmpBinDir, { recursive: true });

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import fs from "node:fs";
 import { Readable } from "node:stream";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
@@ -6,8 +6,13 @@ import { createErrorResponse } from "@/lib/errors";
 import { checkRateLimit } from "@/lib/ratelimit";
 import { parseYouTubeVideoId } from "@/lib/youtube";
 import {
-  DownloadQuality,
-  VALID_QUALITIES,
+  DownloadType,
+  VideoQuality,
+  AudioFormat,
+  AudioQuality,
+  VALID_VIDEO_QUALITIES,
+  VALID_AUDIO_FORMATS,
+  VALID_AUDIO_QUALITIES,
   DownloadError,
   executeDownload,
   cleanupDirectory,
@@ -52,7 +57,13 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Request body validation & length limit
-  let body: { url?: string; quality?: string };
+  let body: {
+    url?: string;
+    type?: string;
+    quality?: string;
+    format?: string;
+    audioQuality?: string;
+  };
   try {
     const text = await req.text();
     if (text.length > 2000) {
@@ -71,7 +82,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { url, quality } = body;
+  const { url, type, quality, format, audioQuality } = body;
   if (!url || typeof url !== "string") {
     return createErrorResponse(
       "INVALID_URL",
@@ -92,14 +103,47 @@ export async function POST(req: NextRequest) {
 
   const videoId = parsed.videoId;
 
-  // 4. Quality selection validation
-  const rawQuality = (quality || "best").toString().trim().toLowerCase() as DownloadQuality;
-  if (!VALID_QUALITIES.includes(rawQuality)) {
-    return createErrorResponse(
-      "INVALID_URL",
-      `Invalid quality option. Supported qualities: ${VALID_QUALITIES.join(", ")}.`,
-      corsHeaders
-    );
+  // 4. Determine download type (video vs audio)
+  const isAudio =
+    type === "audio" ||
+    (typeof format === "string" && VALID_AUDIO_FORMATS.includes(format.toLowerCase() as AudioFormat));
+  const downloadType: DownloadType = isAudio ? "audio" : "video";
+
+  // Validate parameters based on type
+  let validQuality: VideoQuality = "best";
+  let validFormat: AudioFormat = "mp3";
+  let validAudioQuality: AudioQuality = "best";
+
+  if (downloadType === "video") {
+    const rawQuality = (quality || "best").toString().trim().toLowerCase() as VideoQuality;
+    if (!VALID_VIDEO_QUALITIES.includes(rawQuality)) {
+      return createErrorResponse(
+        "INVALID_URL",
+        `Invalid quality option. Supported video qualities: ${VALID_VIDEO_QUALITIES.join(", ")}.`,
+        corsHeaders
+      );
+    }
+    validQuality = rawQuality;
+  } else {
+    const rawFormat = (format || "mp3").toString().trim().toLowerCase() as AudioFormat;
+    if (!VALID_AUDIO_FORMATS.includes(rawFormat)) {
+      return createErrorResponse(
+        "INVALID_URL",
+        `Invalid audio format option. Supported formats: ${VALID_AUDIO_FORMATS.join(", ")}.`,
+        corsHeaders
+      );
+    }
+    validFormat = rawFormat;
+
+    const rawAudioQuality = (audioQuality || "best").toString().trim().toLowerCase() as AudioQuality;
+    if (!VALID_AUDIO_QUALITIES.includes(rawAudioQuality)) {
+      return createErrorResponse(
+        "INVALID_URL",
+        `Invalid audio quality option. Supported audio qualities: ${VALID_AUDIO_QUALITIES.join(", ")}.`,
+        corsHeaders
+      );
+    }
+    validAudioQuality = rawAudioQuality;
   }
 
   // 5. Execute download subprocess in temporary directory
@@ -107,7 +151,10 @@ export async function POST(req: NextRequest) {
   try {
     downloadResult = await executeDownload({
       videoId,
-      quality: rawQuality,
+      type: downloadType,
+      quality: validQuality,
+      format: validFormat,
+      audioQuality: validAudioQuality,
       abortSignal: req.signal,
     });
   } catch (err) {
@@ -116,12 +163,12 @@ export async function POST(req: NextRequest) {
     }
     return createErrorResponse(
       "DOWNLOAD_FAILED",
-      "An unexpected error occurred while preparing the video download.",
+      "An unexpected error occurred while preparing the media download.",
       corsHeaders
     );
   }
 
-  // 6. Stream the video file to the client with automatic cleanup
+  // 6. Stream the media file to the client with automatic cleanup
   try {
     const nodeStream = fs.createReadStream(downloadResult.filePath);
     let isCleaned = false;
@@ -168,7 +215,7 @@ export async function POST(req: NextRequest) {
     releaseDownloadSlot();
     return createErrorResponse(
       "DOWNLOAD_FAILED",
-      "Failed to stream the video download.",
+      "Failed to stream the media download.",
       corsHeaders
     );
   }
