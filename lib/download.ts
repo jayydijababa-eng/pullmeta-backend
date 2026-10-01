@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { ErrorCode } from "@/lib/errors";
 import { getYtDlpPath, getFfmpegPath, getFfprobePath } from "@/lib/binaries";
+import { createRequestCookieFile, getProxyUrl, convertToNetscapeCookies, areCookiesConfigured } from "@/lib/cookies";
 
 export type DownloadType = "video" | "audio";
 export type VideoQuality =
@@ -199,8 +200,12 @@ export function getAudioFormatConfig(
 
 /**
  * Normalizes cookies to the standard Netscape HTTP Cookie format expected by yt-dlp.
- * Automatically detects and converts JSON-formatted cookies (e.g. from Cookie-Editor / DevTools)
- * as well as base64-encoded or raw Netscape strings.
+ * Automatically handles:
+ * 1. File paths on disk (e.g. /app/cookies.txt, ./cookies.txt)
+ * 2. Standard HTTP Cookie header format (name1=val1; name2=val2)
+ * 3. Base64-encoded strings (with or without 'base64:' prefix)
+ * 4. JSON array of cookies (from Cookie-Editor extension or Chrome DevTools)
+ * 5. Raw Netscape format strings
  */
 export function formatCookiesForYtDlp(raw: string, defaultDomain = ".youtube.com"): string {
   if (!raw || typeof raw !== "string") return "";
@@ -216,13 +221,45 @@ export function formatCookiesForYtDlp(raw: string, defaultDomain = ".youtube.com
     content = content.slice(1, -1).trim();
   }
 
-  // Handle base64: prefix
+  // Check if content points to an existing file on disk
+  try {
+    if (fs.existsSync(content)) {
+      const stats = fs.statSync(content);
+      if (stats.isFile()) {
+        content = fs.readFileSync(content, "utf-8").trim();
+      }
+    }
+  } catch {
+    // ignore filesystem errors
+  }
+
+  // Handle base64: prefix or raw base64 string
   if (content.startsWith("base64:")) {
     try {
       content = Buffer.from(content.slice(7), "base64").toString("utf-8").trim();
     } catch {
       // ignore
     }
+  } else if (!content.includes("\n") && !content.includes(" ") && content.length > 30) {
+    try {
+      const decoded = Buffer.from(content, "base64").toString("utf-8").trim();
+      if (
+        decoded.includes("Netscape") ||
+        decoded.includes("youtube.com") ||
+        decoded.startsWith("[") ||
+        decoded.startsWith("{") ||
+        decoded.includes("\t")
+      ) {
+        content = decoded;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Strip Cookie: prefix if pasted from HTTP request header
+  if (content.toLowerCase().startsWith("cookie:")) {
+    content = content.replace(/^cookie:\s*/i, "").trim();
   }
 
   // Check if content is JSON
@@ -264,12 +301,73 @@ export function formatCookiesForYtDlp(raw: string, defaultDomain = ".youtube.com
     }
   }
 
+  // Check if content is key-value cookie pairs (e.g. "SID=abc; HSID=def; SSID=ghi")
+  if (content.includes("=") && content.includes(";") && !content.includes("\t")) {
+    const pairs = content.split(";").map((p) => p.trim()).filter(Boolean);
+    const lines: string[] = [
+      "# Netscape HTTP Cookie File",
+      "# https://curl.se/docs/http-cookies.html",
+      "",
+    ];
+    const expiry = Math.floor(Date.now() / 1000 + 365 * 24 * 3600);
+    for (const pair of pairs) {
+      const eqIdx = pair.indexOf("=");
+      if (eqIdx <= 0) continue;
+      const name = pair.substring(0, eqIdx).trim();
+      const value = pair.substring(eqIdx + 1).trim();
+      if (name) {
+        lines.push(`${defaultDomain}\tTRUE\t/\tTRUE\t${expiry}\t${name}\t${value}`);
+      }
+    }
+    if (lines.length > 3) {
+      return lines.join("\n") + "\n";
+    }
+  }
+
   // Ensure header if not already present
   if (!content.includes("# Netscape HTTP Cookie File")) {
     content = `# Netscape HTTP Cookie File\n# https://curl.se/docs/http-cookies.html\n\n${content}`;
   }
 
   return content;
+}
+
+/**
+ * Resolves cookies from environment variables or common local filesystem locations.
+ */
+export function resolveCookieContent(): string | null {
+  const envVal = process.env.YOUTUBE_COOKIES || process.env.COOKIES;
+  if (envVal && envVal.trim()) {
+    const formatted = formatCookiesForYtDlp(envVal, ".youtube.com");
+    if (formatted) return formatted;
+  }
+
+  const candidatePaths = [
+    path.join(process.cwd(), "cookies.txt"),
+    path.join(process.cwd(), ".cookies.txt"),
+    path.join(process.cwd(), "..", "cookies.txt"),
+    "/app/cookies.txt",
+    "/etc/secrets/cookies.txt",
+  ];
+
+  for (const p of candidatePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        const stats = fs.statSync(p);
+        if (stats.isFile()) {
+          const fileContent = fs.readFileSync(p, "utf-8").trim();
+          if (fileContent) {
+            const formatted = formatCookiesForYtDlp(fileContent, ".youtube.com");
+            if (formatted) return formatted;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -382,276 +480,282 @@ export async function executeDownload(
     const outputTemplate = path.join(tempDir, "media.%(ext)s");
     const maxFilesizeMb = Math.max(1, Math.floor(maxSizeBytes / (1024 * 1024)));
 
-    const args: string[] = [
+    const baseArgs: string[] = [
       "--no-playlist",
       "--no-warnings",
       "--no-progress",
       "--no-part",
+      "--js-runtimes",
+      "node",
     ];
 
-    if (process.env.YOUTUBE_PLAYER_CLIENT) {
-      args.push("--extractor-args", `youtube:player_client=${process.env.YOUTUBE_PLAYER_CLIENT}`);
+    const proxy = getProxyUrl();
+    if (proxy) {
+      baseArgs.push("--proxy", proxy);
     }
 
-    if (process.env.YOUTUBE_PROXY) {
-      args.push("--proxy", process.env.YOUTUBE_PROXY);
-    } else if (process.env.HTTP_PROXY || process.env.HTTPS_PROXY) {
-      args.push("--proxy", (process.env.HTTPS_PROXY || process.env.HTTP_PROXY)!);
-    }
-
-    const cookieEnv = process.env.YOUTUBE_COOKIES || process.env.COOKIES;
-    if (cookieEnv) {
-      const cookiePath = path.join(tempDir, ".cookies.txt");
-      const normalizedCookies = formatCookiesForYtDlp(cookieEnv, ".youtube.com");
-      await fs.promises.writeFile(cookiePath, normalizedCookies, "utf-8");
-      args.push("--cookies", cookiePath);
+    const { cookiePath, cleanup: cleanupCookie } = await createRequestCookieFile();
+    if (cookiePath) {
+      baseArgs.push("--cookies", cookiePath);
     }
 
     let expectedExt = "mp4";
     let defaultContentType = "video/mp4";
 
-    if (type === "audio") {
-      const audioConfig = getAudioFormatConfig(format, audioQuality, !!ffmpegPath);
-      args.push(...audioConfig.args);
-      expectedExt = audioConfig.ext;
-      defaultContentType = audioConfig.contentType;
-    } else {
-      const formatInfo = getVideoFormatSelector(quality, !!ffmpegPath);
-      if (formatInfo.requiresFfmpeg && !ffmpegPath) {
-        throw new DownloadError(
-          "DOWNLOAD_UNAVAILABLE",
-          `Quality ${quality} requires video and audio stream merging with FFmpeg, which is not available in this environment.`
-        );
-      }
-      args.push("-f", formatInfo.selector);
-      if (ffmpegPath) {
-        args.push("--merge-output-format", "mp4");
-        // Ensure merged audio is always universally playable AAC in the MP4 container (plays on Windows Media Player, iOS, etc.)
-        args.push("--postprocessor-args", "Merger:-c:a aac");
-      }
-      expectedExt = "mp4";
-      defaultContentType = "video/mp4";
-    }
-
-    if (ffmpegPath && (ffmpegPath.includes("/") || ffmpegPath.includes("\\"))) {
-      args.push("--ffmpeg-location", ffmpegPath);
-    }
-
     const targetUrl = options.url || `https://www.youtube.com/watch?v=${videoId}`;
 
-    args.push(
-      "--max-filesize",
-      `${maxFilesizeMb}M`,
-      "-o",
-      outputTemplate,
-      "--write-info-json",
-      targetUrl
-    );
+    const buildYtDlpArgs = (playerClient: string): string[] => {
+      const runArgs: string[] = [
+        ...baseArgs,
+        "--extractor-args",
+        `youtube:player_client=${playerClient}`,
+      ];
 
-    await new Promise<void>((resolve, reject) => {
-      let isSettled = false;
-      let timedOut = false;
-      let aborted = false;
-      let outputBuffer = "";
-
-      const child = spawn(ytDlpPath, args, {
-        shell: false,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // ignore
+      if (type === "audio") {
+        const audioConfig = getAudioFormatConfig(format, audioQuality, !!ffmpegPath);
+        runArgs.push(...audioConfig.args);
+        expectedExt = audioConfig.ext;
+        defaultContentType = audioConfig.contentType;
+      } else {
+        const formatInfo = getVideoFormatSelector(quality, !!ffmpegPath);
+        if (formatInfo.requiresFfmpeg && !ffmpegPath) {
+          throw new DownloadError(
+            "DOWNLOAD_UNAVAILABLE",
+            `Quality ${quality} requires video and audio stream merging with FFmpeg, which is not available in this environment.`
+          );
         }
-      }, timeoutMs);
-
-      const abortHandler = () => {
-        aborted = true;
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // ignore
+        runArgs.push("-f", formatInfo.selector);
+        if (ffmpegPath) {
+          runArgs.push("--merge-output-format", "mp4");
+          // Ensure merged audio is always universally playable AAC in the MP4 container (plays on Windows Media Player, iOS, etc.)
+          runArgs.push("--postprocessor-args", "Merger:-c:a aac");
         }
-      };
-
-      if (abortSignal) {
-        if (abortSignal.aborted) {
-          abortHandler();
-        } else {
-          abortSignal.addEventListener("abort", abortHandler, { once: true });
-        }
+        expectedExt = "mp4";
+        defaultContentType = "video/mp4";
       }
 
-      child.stdout?.on("data", (chunk: Buffer) => {
-        if (outputBuffer.length < 25000) {
-          outputBuffer += chunk.toString("utf-8");
-        }
-      });
+      if (ffmpegPath && (ffmpegPath.includes("/") || ffmpegPath.includes("\\"))) {
+        runArgs.push("--ffmpeg-location", ffmpegPath);
+      }
 
-      child.stderr?.on("data", (chunk: Buffer) => {
-        if (outputBuffer.length < 25000) {
-          outputBuffer += chunk.toString("utf-8");
-        }
-      });
+      runArgs.push(
+        "--max-filesize",
+        `${maxFilesizeMb}M`,
+        "-o",
+        outputTemplate,
+        "--write-info-json",
+        targetUrl
+      );
 
-      child.on("error", () => {
-        if (isSettled) return;
-        isSettled = true;
-        clearTimeout(timer);
+      return runArgs;
+    };
+
+    const runYtDlpProcess = (
+      argsToRun: string[]
+    ): Promise<{ code: number | null; outputBuffer: string; timedOut: boolean; aborted: boolean }> => {
+      return new Promise((resolve) => {
+        let outputBuffer = "";
+        let timedOut = false;
+        let aborted = false;
+
+        const child = spawn(ytDlpPath, argsToRun, {
+          shell: false,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+
+        const timer = setTimeout(() => {
+          timedOut = true;
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+        }, timeoutMs);
+
+        const abortHandler = () => {
+          aborted = true;
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+        };
+
         if (abortSignal) {
-          abortSignal.removeEventListener("abort", abortHandler);
+          if (abortSignal.aborted) {
+            abortHandler();
+          } else {
+            abortSignal.addEventListener("abort", abortHandler, { once: true });
+          }
         }
-        reject(
-          new DownloadError(
-            "DOWNLOAD_FAILED",
-            "Failed to start download process."
-          )
+
+        child.stdout?.on("data", (chunk: Buffer) => {
+          if (outputBuffer.length < 25000) {
+            outputBuffer += chunk.toString("utf-8");
+          }
+        });
+
+        child.stderr?.on("data", (chunk: Buffer) => {
+          if (outputBuffer.length < 25000) {
+            outputBuffer += chunk.toString("utf-8");
+          }
+        });
+
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          if (abortSignal) {
+            abortSignal.removeEventListener("abort", abortHandler);
+          }
+          resolve({
+            code: 1,
+            outputBuffer: outputBuffer + "\n" + (err?.message || "Failed to start download process."),
+            timedOut,
+            aborted,
+          });
+        });
+
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          if (abortSignal) {
+            abortSignal.removeEventListener("abort", abortHandler);
+          }
+          resolve({ code, outputBuffer, timedOut, aborted });
+        });
+      });
+    };
+
+    let runResult: { code: number | null; outputBuffer: string; timedOut: boolean; aborted: boolean };
+    try {
+      const primaryClient = process.env.YOUTUBE_PLAYER_CLIENT || "visionos,android,mweb";
+      runResult = await runYtDlpProcess(buildYtDlpArgs(primaryClient));
+
+      // If initial attempt failed specifically due to a bot/sign-in check and no custom client was forced,
+      // automatically retry once with alternative mobile/fallback client
+      if (
+        runResult.code !== 0 &&
+        !runResult.timedOut &&
+        !runResult.aborted &&
+        !process.env.YOUTUBE_PLAYER_CLIENT
+      ) {
+        const lower = runResult.outputBuffer.toLowerCase();
+        if (lower.includes("sign in to confirm") || lower.includes("bot")) {
+          runResult = await runYtDlpProcess(buildYtDlpArgs("android,mweb"));
+        }
+      }
+    } finally {
+      await cleanupCookie().catch(() => {});
+    }
+
+    if (runResult.timedOut) {
+      throw new DownloadError(
+        "DOWNLOAD_TIMEOUT",
+        "Media processing exceeded execution time limit. For long videos or high quality, try a lower quality."
+      );
+    }
+
+    if (runResult.aborted) {
+      throw new DownloadError(
+        "DOWNLOAD_FAILED",
+        "Download was aborted by the client."
+      );
+    }
+
+    if (runResult.code !== 0) {
+      const lower = runResult.outputBuffer.toLowerCase();
+
+      // Check max-filesize first before generic messages
+      if (
+        lower.includes("max-filesize") ||
+        lower.includes("file is larger than max-filesize") ||
+        lower.includes("is larger than max-filesize")
+      ) {
+        throw new DownloadError(
+          "DOWNLOAD_TOO_LARGE",
+          `The file exceeds the maximum permitted serverless size (${maxFilesizeMb} MB). For long videos, try 360p, 480p, or Audio Only.`
         );
-      });
+      }
 
-      child.on("close", (code) => {
-        if (isSettled) return;
-        isSettled = true;
-        clearTimeout(timer);
-        if (abortSignal) {
-          abortSignal.removeEventListener("abort", abortHandler);
-        }
+      if (
+        lower.includes("requested format is not available") ||
+        lower.includes("format not available") ||
+        lower.includes("no video formats found")
+      ) {
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          `The requested ${type} quality or format is not available for this video.`
+        );
+      }
 
-        if (timedOut) {
-          return reject(
-            new DownloadError(
-              "DOWNLOAD_TIMEOUT",
-              "Media processing exceeded execution time limit. For long videos or high quality, try a lower quality."
-            )
-          );
-        }
+      if (lower.includes("sign in to confirm") || lower.includes("bot")) {
+        console.error(
+          `[YouTube Bot/Sign-in Detected] Exit code: ${runResult.code}. Technical details: ${runResult.outputBuffer.slice(-500)}`
+        );
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          "This video is temporarily unavailable. Please try again in a few minutes."
+        );
+      }
 
-        if (aborted) {
-          return reject(
-            new DownloadError(
-              "DOWNLOAD_FAILED",
-              "Download was aborted by the client."
-            )
-          );
-        }
+      if (lower.includes("sign in to confirm your age") || lower.includes("age-restricted")) {
+        console.error(`[YouTube Age-Restricted Detected] Sign-in required for video.`);
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          "This video is temporarily unavailable. Please try again in a few minutes."
+        );
+      }
 
-        if (code !== 0) {
-          const lower = outputBuffer.toLowerCase();
+      if (
+        lower.includes("not available in your country") ||
+        lower.includes("blocked in your country") ||
+        lower.includes("geo-restricted")
+      ) {
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          "This video is region-restricted or blocked in the server location."
+        );
+      }
 
-          // Check max-filesize first before generic messages
-          if (
-            lower.includes("max-filesize") ||
-            lower.includes("file is larger than max-filesize") ||
-            lower.includes("is larger than max-filesize")
-          ) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_TOO_LARGE",
-                `The file exceeds the maximum permitted serverless size (${maxFilesizeMb} MB). For long videos, try 360p, 480p, or Audio Only.`
-              )
-            );
-          }
+      if (
+        lower.includes("this live event has ended") ||
+        lower.includes("live stream recording") ||
+        lower.includes("is a live stream")
+      ) {
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          "Active or newly completed live streams cannot be downloaded until YouTube finishes processing the archive."
+        );
+      }
 
-          if (
-            lower.includes("requested format is not available") ||
-            lower.includes("format not available") ||
-            lower.includes("no video formats found")
-          ) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_UNAVAILABLE",
-                `The requested ${type} quality or format is not available for this video.`
-              )
-            );
-          }
+      if (lower.includes("private video") || lower.includes("members-only")) {
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          "This video is private, members-only, or unavailable on YouTube."
+        );
+      }
 
-          if (lower.includes("sign in to confirm") || lower.includes("bot")) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_UNAVAILABLE",
-                "YouTube has applied a bot/sign-in check on this cloud server for this video. To bypass this permanently, configure YOUTUBE_COOKIES in your Railway deployment, or try selecting 720p / Audio Only."
-              )
-            );
-          }
+      if (lower.includes("timed out") || lower.includes("timeout")) {
+        throw new DownloadError(
+          "DOWNLOAD_TIMEOUT",
+          "Network timeout occurred while fetching the media."
+        );
+      }
 
-          if (lower.includes("sign in to confirm your age") || lower.includes("age-restricted")) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_UNAVAILABLE",
-                "This video is age-restricted and requires YouTube sign-in. It cannot be downloaded through public serverless proxies."
-              )
-            );
-          }
+      console.error(`[PullMeta Download Error] exit code: ${runResult.code}, output: ${runResult.outputBuffer}`);
+      const errorLine =
+        runResult.outputBuffer
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith("ERROR:") || l.toLowerCase().includes("error:"))
+          .pop() || runResult.outputBuffer.slice(-250).trim();
 
-          if (
-            lower.includes("not available in your country") ||
-            lower.includes("blocked in your country") ||
-            lower.includes("geo-restricted")
-          ) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_UNAVAILABLE",
-                "This video is region-restricted or blocked in the server location."
-              )
-            );
-          }
-
-          if (
-            lower.includes("this live event has ended") ||
-            lower.includes("live stream recording") ||
-            lower.includes("is a live stream")
-          ) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_UNAVAILABLE",
-                "Active or newly completed live streams cannot be downloaded until YouTube finishes processing the archive."
-              )
-            );
-          }
-
-          if (lower.includes("private video") || lower.includes("members-only")) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_UNAVAILABLE",
-                "This video is private, members-only, or unavailable on YouTube."
-              )
-            );
-          }
-
-          if (lower.includes("timed out") || lower.includes("timeout")) {
-            return reject(
-              new DownloadError(
-                "DOWNLOAD_TIMEOUT",
-                "Network timeout occurred while fetching the media."
-              )
-            );
-          }
-
-          console.error(`[PullMeta Download Error] exit code: ${code}, output: ${outputBuffer}`);
-          const errorLine =
-            outputBuffer
-              .split("\n")
-              .map((l) => l.trim())
-              .filter((l) => l.startsWith("ERROR:") || l.toLowerCase().includes("error:"))
-              .pop() || outputBuffer.slice(-250).trim();
-
-          return reject(
-            new DownloadError(
-              "DOWNLOAD_FAILED",
-              errorLine
-                ? `Download failed: ${errorLine}`
-                : "Failed to process media download. Please try again with a different format or quality."
-            )
-          );
-        }
-
-        resolve();
-      });
-    });
+      throw new DownloadError(
+        "DOWNLOAD_FAILED",
+        errorLine
+          ? `Download failed: ${errorLine}`
+          : "Failed to process media download. Please try again with a different format or quality."
+      );
+    }
 
     // Locate downloaded media file (strictly match media extensions, never cookies.txt or info.json)
     const MEDIA_EXTS = new Set([".mp4", ".m4a", ".mp3", ".webm", ".wav", ".mkv", ".opus", ".aac", ".flv"]);

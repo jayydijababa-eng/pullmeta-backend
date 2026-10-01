@@ -1,5 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { getYtDlpPath } from "@/lib/binaries";
+import { createRequestCookieFile, getProxyUrl } from "@/lib/cookies";
 
 export interface ThumbnailItem {
   quality: "maxres" | "standard" | "high" | "medium";
@@ -228,21 +233,34 @@ export async function probeVideoFormats(
   availableQualities: VideoQualityOption[];
   audioOptions: AudioDownloadOption[];
 }> {
+  let cleanupCookie: (() => Promise<void>) | null = null;
   try {
     const ytDlpPath = await getYtDlpPath();
     if (!ytDlpPath) {
       return getFallbackFormatOptions();
     }
 
+    const ytClients = process.env.YOUTUBE_PLAYER_CLIENT || "visionos,android,mweb";
     const args = [
       "--dump-json",
       "--no-playlist",
       "--skip-download",
+      "--js-runtimes",
+      "node",
+      "--extractor-args",
+      `youtube:player_client=${ytClients}`,
       `https://www.youtube.com/watch?v=${videoId}`,
     ];
 
-    if (process.env.YOUTUBE_PLAYER_CLIENT) {
-      args.push("--extractor-args", `youtube:player_client=${process.env.YOUTUBE_PLAYER_CLIENT}`);
+    const proxy = getProxyUrl();
+    if (proxy) {
+      args.push("--proxy", proxy);
+    }
+
+    const { cookiePath, cleanup } = await createRequestCookieFile();
+    cleanupCookie = cleanup;
+    if (cookiePath) {
+      args.push("--cookies", cookiePath);
     }
 
     const rawJson = await new Promise<string>((resolve, reject) => {
@@ -385,6 +403,10 @@ export async function probeVideoFormats(
     return { availableQualities: qualityOptions, audioOptions };
   } catch {
     return getFallbackFormatOptions();
+  } finally {
+    if (cleanupCookie) {
+      await cleanupCookie().catch(() => {});
+    }
   }
 }
 

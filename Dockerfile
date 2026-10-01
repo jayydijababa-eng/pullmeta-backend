@@ -9,9 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     curl \
     ca-certificates \
- && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
- && chmod a+rx /usr/local/bin/yt-dlp \
  && rm -rf /var/lib/apt/lists/*
+
+# Install the latest standalone yt-dlp release directly from upstream GitHub
+RUN curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+ && chmod a+rx /usr/local/bin/yt-dlp \
+ && /usr/local/bin/yt-dlp --version
 
 # The official node:20 image already provides the user 'node' with UID 1000
 USER node

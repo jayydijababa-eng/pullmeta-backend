@@ -388,4 +388,75 @@ describe("POST /api/download Route Handler", () => {
     expect(blockedData.error.code).toBe("DOWNLOAD_RATE_LIMITED");
     expect(blockedRes.headers.get("Retry-After")).toBeDefined();
   });
+
+  describe("Cookie and Proxy Security & Management", () => {
+    it("converts JSON cookie array export to valid Netscape format with correct flags", async () => {
+      const { convertToNetscapeCookies } = await import("../lib/cookies");
+      const jsonStr = JSON.stringify([
+        {
+          domain: ".youtube.com",
+          name: "MOCK_COOKIE",
+          value: "mock_value_123",
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          expirationDate: 1900000000,
+        },
+      ]);
+
+      const netscape = convertToNetscapeCookies(jsonStr);
+      expect(netscape).toBeDefined();
+      expect(netscape).toContain("# Netscape HTTP Cookie File");
+      expect(netscape).toContain("#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1900000000\tMOCK_COOKIE\tmock_value_123");
+    });
+
+    it("creates isolated request-scoped cookie file and cleans up on demand", async () => {
+      const { createRequestCookieFile } = await import("../lib/cookies");
+      process.env.YOUTUBE_COOKIES = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1900000000\tTEST\tval";
+
+      const { cookiePath, cleanup } = await createRequestCookieFile();
+      expect(cookiePath).toBeDefined();
+      expect(fs.existsSync(cookiePath!)).toBe(true);
+
+      const content = fs.readFileSync(cookiePath!, "utf-8");
+      expect(content).toContain("TEST\tval");
+
+      await cleanup();
+      expect(fs.existsSync(cookiePath!)).toBe(false);
+      delete process.env.YOUTUBE_COOKIES;
+    });
+
+    it("respects PROXY_URL and returns boolean safely in isProxyConfigured", async () => {
+      const { getProxyUrl, isProxyConfigured } = await import("../lib/cookies");
+      delete process.env.PROXY_URL;
+      delete process.env.YOUTUBE_PROXY;
+      delete process.env.HTTP_PROXY;
+      delete process.env.HTTPS_PROXY;
+
+      expect(isProxyConfigured()).toBe(false);
+      expect(getProxyUrl()).toBeNull();
+
+      process.env.PROXY_URL = "http://proxy.example.com:8080";
+      expect(isProxyConfigured()).toBe(true);
+      expect(getProxyUrl()).toBe("http://proxy.example.com:8080");
+      delete process.env.PROXY_URL;
+    });
+
+    it("health check endpoint returns booleans and never exposes secret values", async () => {
+      const { GET: healthGET } = await import("../app/api/health/route");
+      const req = new NextRequest("http://localhost:4000/api/health");
+      const res = await healthGET(req);
+      expect(res.status).toBe(200);
+
+      const json = await res.json();
+      expect(json.ok).toBe(true);
+      expect(typeof json.cookiesLoaded).toBe("boolean");
+      expect(typeof json.proxyConfigured).toBe("boolean");
+      expect(typeof json.hasFfmpeg).toBe("boolean");
+      expect(json).not.toHaveProperty("cookies");
+      expect(json).not.toHaveProperty("YOUTUBE_COOKIES");
+      expect(json).not.toHaveProperty("proxy");
+      expect(json).not.toHaveProperty("PROXY_URL");
+    });
+  });
 });

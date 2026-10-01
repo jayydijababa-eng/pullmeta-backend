@@ -20,6 +20,16 @@ dist/
 .env.test
 !.env.example
 
+# Cookies & Temporary Auth Data
+cookies.txt
+*.cookies
+*.cookies.txt
+.cookies.txt
+yt_cookies*.txt
+/tmp/*
+tmp/
+*.tmp
+
 # Debug logs
 npm-debug.log*
 yarn-debug.log*

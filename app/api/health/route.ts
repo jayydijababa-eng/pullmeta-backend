@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { spawnSync } from "node:child_process";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
-import { getYtDlpPath, getFfmpegPath, getFfprobePath } from "@/lib/binaries";
+import { getYtDlpPath, getFfmpegPath } from "@/lib/binaries";
+import { areCookiesConfigured, isProxyConfigured } from "@/lib/cookies";
 
 export const runtime = "nodejs";
 
@@ -11,21 +13,27 @@ export async function OPTIONS(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const corsHeaders = getCorsHeaders(req);
   const ffmpegPath = await getFfmpegPath().catch(() => null);
-  const ffprobePath = await getFfprobePath().catch(() => null);
   const ytDlpPath = await getYtDlpPath().catch(() => null);
 
-  const hasYtCookies = Boolean(process.env.YOUTUBE_COOKIES || process.env.COOKIES);
+  let ytDlpVersion: string | null = null;
+  if (ytDlpPath) {
+    try {
+      const probe = spawnSync(ytDlpPath, ["--version"], { timeout: 3000, windowsHide: true });
+      if (probe.status === 0 && probe.stdout) {
+        ytDlpVersion = probe.stdout.toString("utf-8").trim();
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   return NextResponse.json(
     {
       ok: true,
-      version: "3.0.0",
+      cookiesLoaded: areCookiesConfigured(),
+      proxyConfigured: isProxyConfigured(),
+      ytDlpVersion,
       hasFfmpeg: Boolean(ffmpegPath),
-      ffmpegPath: ffmpegPath ? "available" : "missing",
-      hasFfprobe: Boolean(ffprobePath),
-      ffprobePath: ffprobePath ? "available" : "missing",
-      hasYtDlp: Boolean(ytDlpPath),
-      hasYtCookies,
     },
     {
       status: 200,
