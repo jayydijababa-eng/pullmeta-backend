@@ -98,16 +98,18 @@ export function getVideoFormatSelector(
 
   if (targetHeight) {
     if (hasFfmpeg) {
-      // Prioritize exact target resolution (e.g. 1080p) in H.264 (avc1) + AAC first,
-      // then exact target resolution in any codec, then fallback up to target resolution.
+      // 1. Prioritize exact target resolution (e.g. 1080p) in H.264 (avc1) + AAC first
+      // 2. Exact target resolution with any audio
+      // 3. Fallback to highest available resolution up to target resolution
+      // 4. Ultimate fallback to best available single/merged stream (bv*+ba/b) so downloads never fail
       return {
         requiresFfmpeg: true,
-        selector: `bestvideo[height=${targetHeight}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=${targetHeight}][vcodec^=avc1]+bestaudio/bestvideo[height=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height=${targetHeight}]+bestaudio/bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio/bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}]/best`,
+        selector: `bv*[height=${targetHeight}][vcodec^=avc1]+ba[ext=m4a]/bv*[height=${targetHeight}]+ba/bv*[height<=${targetHeight}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=${targetHeight}]+ba/b[height<=${targetHeight}]/bv*+ba/b`,
       };
     }
     return {
       requiresFfmpeg: false,
-      selector: `best[height=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
+      selector: `best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
     };
   }
 
@@ -116,7 +118,7 @@ export function getVideoFormatSelector(
     if (hasFfmpeg) {
       return {
         requiresFfmpeg: true,
-        selector: `bestvideo[height=2160][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=2160][vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best`,
+        selector: `bv*[height=2160]+ba/bv*[height<=2160]+ba/bv*+ba/b`,
       };
     }
   }
@@ -125,12 +127,12 @@ export function getVideoFormatSelector(
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: true,
-      selector: `bestvideo[height=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best`,
+      selector: `bv*[height=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height=1080]+ba/bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b`,
     };
   }
   return {
     requiresFfmpeg: false,
-    selector: `best[height<=1080][vcodec!=none][acodec!=none]/best[vcodec!=none]/best`,
+    selector: `best[height<=1080][vcodec!=none]/best[vcodec!=none]/best`,
   };
 }
 
@@ -412,9 +414,8 @@ export async function executeDownload(
       "--no-part",
     ];
 
-    if (!isInstagram) {
-      const ytClients = process.env.YOUTUBE_PLAYER_CLIENT || "android,ios,mweb,web_safari";
-      args.push("--extractor-args", `youtube:player_client=${ytClients}`);
+    if (!isInstagram && process.env.YOUTUBE_PLAYER_CLIENT) {
+      args.push("--extractor-args", `youtube:player_client=${process.env.YOUTUBE_PLAYER_CLIENT}`);
     }
 
     if (process.env.YOUTUBE_PROXY) {
