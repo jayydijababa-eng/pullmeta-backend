@@ -429,7 +429,7 @@ export async function executeDownload(
       : (process.env.YOUTUBE_COOKIES || process.env.COOKIES);
 
     if (cookieEnv) {
-      const cookiePath = path.join(tempDir, isInstagram ? "ig_cookies.txt" : "cookies.txt");
+      const cookiePath = path.join(tempDir, isInstagram ? ".ig_cookies.txt" : ".cookies.txt");
       const defaultDomain = isInstagram ? ".instagram.com" : ".youtube.com";
       const normalizedCookies = formatCookiesForYtDlp(cookieEnv, defaultDomain);
       await fs.promises.writeFile(cookiePath, normalizedCookies, "utf-8");
@@ -660,11 +660,13 @@ export async function executeDownload(
       });
     });
 
-    // Locate downloaded media file
+    // Locate downloaded media file (strictly match media extensions, never cookies.txt or info.json)
+    const MEDIA_EXTS = new Set([".mp4", ".m4a", ".mp3", ".webm", ".wav", ".mkv", ".opus", ".aac", ".flv"]);
     const files = await fs.promises.readdir(tempDir);
-    const mediaFile = files.find(
-      (f) => !f.endsWith(".info.json") && !f.endsWith(".part")
-    );
+    const mediaFile = files.find((f) => {
+      const ext = path.extname(f).toLowerCase();
+      return MEDIA_EXTS.has(ext) && !f.endsWith(".part");
+    }) || files.find((f) => !f.endsWith(".info.json") && !f.endsWith(".part") && !f.endsWith(".txt"));
 
     if (!mediaFile) {
       throw new DownloadError(
