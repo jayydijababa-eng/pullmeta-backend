@@ -99,12 +99,12 @@ export function getVideoFormatSelector(
     if (hasFfmpeg) {
       return {
         requiresFfmpeg: true,
-        selector: `bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]`,
+        selector: `bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
       };
     }
     return {
       requiresFfmpeg: false,
-      selector: `best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]`,
+      selector: `best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
     };
   }
 
@@ -319,7 +319,7 @@ export async function executeDownload(
       "--no-progress",
       "--no-part",
       "--extractor-args",
-      "youtube:player_client=default,visionos,web",
+      "youtube:player_client=visionos,android",
     ];
 
     if (process.env.YOUTUBE_PROXY) {
