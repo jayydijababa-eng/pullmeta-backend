@@ -1,118 +1,154 @@
-# PullMeta Backend API
+# PullMeta Backend
 
-High-performance, standalone Next.js Route Handler service providing YouTube metadata extraction and thumbnail proxying with built-in rate limiting, multi-tier caching, and security headers.
+High-performance, containerized YouTube video downloader, audio extractor, and metadata inspection service built with Next.js App Router, yt-dlp, and FFmpeg.
 
-## Endpoints
+---
 
-### 1. `POST /api/extract`
-Extracts YouTube video metadata by video URL.
+## Overview & Features
 
-- **Request Body**:
-  ```json
-  {
-    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-  }
-  ```
-- **Success Response (200 OK)**:
-  ```json
-  {
-    "videoId": "dQw4w9WgXcQ",
-    "title": "Rick Astley - Never Gonna Give You Up",
-    "description": "The official video...",
-    "tags": ["rick astley", "pop"],
-    "thumbnails": [
-      {
-        "quality": "maxres",
-        "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
-        "width": 1280,
-        "height": 720
-      }
-    ],
-    "channel": "Rick Astley",
-    "publishedAt": "2009-10-25T06:57:33Z",
-    "duration": 213,
-    "viewCount": 1800000000,
-    "categoryId": "10",
-    "limited": false
-  }
-  ```
-- **Error Response (4xx/5xx)**:
-  ```json
-  {
-    "error": {
-      "code": "INVALID_URL",
-      "message": "Only YouTube links are supported."
-    }
-  }
-  ```
+PullMeta Backend is a dedicated, **YouTube-only** media processing engine designed for serverless and container deployments (Railway, Render, Hugging Face, or self-hosted Docker):
 
-### 2. `GET /api/thumbnail?id=VIDEO_ID&quality=best|maxres|standard|high|medium`
-Streams the thumbnail directly with `Content-Disposition: attachment; filename="VIDEO_ID-quality.jpg"`. The `best` quality parameter checks resolutions in order (`maxres -> standard -> high -> medium`) and returns the highest quality available.
+- **YouTube-Only Architecture:** Tailored strictly for YouTube URLs (`watch`, `shorts`, `youtu.be`, and live stream archives).
+- **Verified Full HD & 4K Quality:** Dynamic stream probing via `yt-dlp` returns honest available resolutions (144p to 4K 2160p) with actual filesize approximations.
+- **Lossless & High-Bitrate Audio:** Extracts pure audio streams transcoded to universally compatible MP3 (320kbps, 256kbps, 128kbps) or native M4A/AAC without re-encoding video.
+- **FFmpeg & FFprobe Verification:** Merges adaptive video and audio streams into standard MP4 containers with universally playable AAC audio, verified via `ffprobe` prior to client delivery.
+- **Enterprise Cookie Authentication:** Resolves YouTube's datacenter bot checks via environment variable `YOUTUBE_COOKIES` with support for both Netscape format and JSON array exports.
+- **Isolated Request Sandboxing:** Every download runs in an isolated temporary directory with a scoped, single-use cookie file that is automatically purged immediately upon completion.
+- **Proxy Support:** Optional residential or datacenter proxy integration via `PROXY_URL` to route requests through clean IP addresses.
+- **Health & Readiness Check:** `/api/health` exposes sanitized booleans (`cookiesLoaded`, `proxyConfigured`, `ytDlpVersion`, `hasFfmpeg`) without leaking sensitive tokens.
 
-### 3. `POST /api/download`
-Streams the requested YouTube video with `Content-Disposition: attachment; filename="<title>.mp4"`.
+---
 
-- **Request Body**:
-  ```json
-  {
-    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    "quality": "best"
-  }
-  ```
-  Supported qualities: `best`, `2160p`, `1440p`, `1080p`, `720p`.
-- **Success Response (200 OK)**:
-  Direct binary stream (`video/mp4` or `video/webm`) using HTTP chunked transfer.
-- **Error Response (4xx/5xx)**:
-  Standard error payload, e.g.:
-  ```json
-  {
-    "error": {
-      "code": "DOWNLOAD_UNAVAILABLE",
-      "message": "The requested quality (2160p) is not available for this video."
-    }
-  }
-  ```
-- **Error Codes**:
-  - `INVALID_URL` (400): Malformed, non-YouTube, or invalid video link.
-  - `DOWNLOAD_UNAVAILABLE` (404): Video is restricted or format is unavailable.
-  - `DOWNLOAD_RATE_LIMITED` (429): Exceeded 5 download requests per 10 minutes or maximum concurrent limit.
-  - `DOWNLOAD_TOO_LARGE` (413): Generated file exceeds server size limit (100 MB).
-  - `DOWNLOAD_TIMEOUT` (504): Processing exceeded server execution window.
-  - `DOWNLOAD_FAILED` (500): General extraction or processing failure.
+## Tech Stack
 
-### 4. `GET /api/health`
-Health check endpoint returning `{ "ok": true }`.
+- **Runtime & Framework:** Node.js 20 LTS, Next.js 16 (App Router Route Handlers)
+- **Language:** TypeScript 5 (Strict Mode)
+- **Media Engine:** `yt-dlp` (Latest upstream standalone release)
+- **Audio/Video Transcoder:** `ffmpeg` & `ffprobe`
+- **JavaScript Challenge Solver:** Node.js (`--js-runtimes node`)
+- **Testing & Quality:** Vitest 3, TypeScript compiler (`tsc --noEmit`)
+- **Deployment:** Railway / Docker (`node:20-bookworm-slim`)
+
+---
+
+## Local Setup & Running
+
+### Prerequisites
+1. **Node.js** >= 18.18.0 (Node 20+ recommended)
+2. **FFmpeg & FFprobe** installed and available in system `PATH`
+3. **yt-dlp** installed or placed in `bin/` or system `PATH`
+
+### Installation
+```bash
+# Clone the repository
+git clone https://github.com/jayydijababa-eng/pullmeta-backend.git
+cd pullmeta-backend
+
+# Install dependencies
+npm install
+
+# Copy environment variable template
+cp .env.example .env
+
+# Run development server (runs on Port 4000)
+npm run dev
+```
+
+### Running Tests & Linting
+```bash
+# Run unit and integration tests (Vitest)
+npm test
+
+# Run TypeScript typecheck
+npm run lint
+```
+
+---
 
 ## Environment Variables
 
-- `YOUTUBE_API_KEY`: Server-only Google Cloud API key for YouTube Data API v3 (used by `/api/extract`; **not** used by `/api/download`).
-- `ALLOWED_ORIGIN`: Allowed origins for CORS (comma-separated, e.g. `https://pullmeta.vercel.app`).
-- `UPSTASH_REDIS_REST_URL`: (Optional) Upstash Redis endpoint for distributed rate-limiting.
-- `UPSTASH_REDIS_REST_TOKEN`: (Optional) Upstash Redis authentication token.
-- `YT_DLP_PATH`: (Optional) Custom path to `yt-dlp` executable. Auto-resolved from system `PATH`, `backend/bin/`, or downloaded standalone Linux binary on Vercel.
-- `FFMPEG_PATH`: (Optional) Custom path to `ffmpeg` executable for merging separate DASH video and audio streams.
+| Variable | Required | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `YOUTUBE_COOKIES` | Optional | *None* | YouTube authentication cookies in Netscape `cookies.txt` or JSON array format. Bypasses datacenter bot checks on cloud servers. |
+| `PROXY_URL` | Optional | *None* | Optional HTTP/HTTPS/SOCKS5 proxy URL (e.g. `http://user:pass@proxy.example.com:8080`). Routed directly to yt-dlp. |
+| `YOUTUBE_PLAYER_CLIENT` | Optional | `visionos,android,mweb` | Client identifiers passed to yt-dlp extractor args. `visionos,android,mweb` bypasses web JS challenges out-of-the-box. |
+| `PORT` | Optional | `4000` | Port on which the backend server listens (dynamically set by Railway/Render). |
+| `NODE_ENV` | Optional | `development` | Server runtime environment (`production` or `development`). |
+| `NEXT_PUBLIC_APP_URL` | Optional | `http://localhost:3000` | Origin URL of the frontend application allowed for CORS requests. |
+| `MAX_FILE_SIZE_BYTES` | Optional | `5368709120` (5 GB) | Hard ceiling on downloaded media size to prevent storage exhaustion. |
+| `DOWNLOAD_TIMEOUT_MS` | Optional | `600000` (10 min) | Max processing duration before aborting stalled downloads. |
+| `MAX_CONCURRENT_DOWNLOADS` | Optional | `5` | Maximum simultaneous download slots processed in memory. |
 
-## Vercel Deployment & Execution Limits
+---
 
-- **Platform Runtime**: Node.js Serverless Function (`maxDuration = 60s` on Vercel Hobby).
-- **Processing Timeout**: Internal 50-second cutoff ensures clean abort and cleanup before platform termination.
-- **Max File Size**: 100 MB default ceiling to protect serverless temporary storage (`/tmp` 512 MB limit) and bandwidth.
-- **Rate Limit**: 5 downloads per IP per 10 minutes, with in-memory concurrent processing limit.
-- **Large Functions**: If deploying custom bundled binaries exceeds standard sizes, Vercel Fluid Compute Large Functions can be enabled via `VERCEL_SUPPORT_LARGE_FUNCTIONS=1`.
+## How to Export YouTube Cookies
 
-```bash
-npm install
-npm test
-npm run dev # Starts on port 4000
-```
+To bypass YouTube's datacenter bot protection reliably on cloud servers, provide cookies from an active session:
 
-## Production Deployment
+1. **Use a Separate Account:** Never use your personal, primary Google account. Create or use a dedicated burner/non-primary Google account.
+2. **Open an Incognito/Private Window:** Launch a fresh private browser window.
+3. **Log In to YouTube:** Go to [youtube.com](https://www.youtube.com) and sign in with the secondary account.
+4. **Open Robots Text:** Navigate to `https://www.youtube.com/robots.txt` in the same tab (this ensures cookies are persisted without background trackers writing ephemeral session markers).
+5. **Export Cookies:** Open a trusted cookie export extension (such as **"Get cookies.txt LOCALLY"** or **"Cookie-Editor"**):
+   - **Netscape format:** Choose "Export as cookies.txt"
+   - **JSON format:** Choose "Export as JSON"
+6. **Close the Private Window:** Close the incognito window **without clicking Log Out**. (Clicking Log Out invalidates the session keys immediately on Google's servers).
 
-- **Railway (Recommended for persistent downloads & Docker)**:
-  - Root directory: `/backend`
-  - Builder: Uses `Dockerfile` automatically (configured via `railway.json`).
-  - Required Variables: `ALLOWED_ORIGIN`, `YOUTUBE_API_KEY`.
-  - Health check path: `/api/health`.
-- **Vercel (Serverless)**:
-  - Deploy with Root Directory set to `backend`.
+---
 
+## How to Deploy on Railway & Set Cookies
+
+1. **Link Repository on Railway:**
+   - In your [Railway Dashboard](https://railway.app), create a new project from your backend GitHub repository (`pullmeta-backend`).
+   - Railway will automatically detect `Dockerfile` or `railway.json`.
+
+2. **Configure Environment Variables:**
+   - Go to your service **Variables** tab.
+   - Click **New Variable** -> enter name `YOUTUBE_COOKIES`.
+   - In the value box, paste the raw content of your exported cookies (either the multi-line Netscape text or the raw JSON array). Railway natively preserves multi-line string variables.
+   - *(Optional)* Add `PROXY_URL` if routing through a residential or datacenter proxy.
+   - Set `NEXT_PUBLIC_APP_URL` to your production frontend URL (e.g. `https://pullmeta.com`).
+
+3. **Deploy & Verify:**
+   - Click **Deploy**.
+   - Inspect build and deployment logs:
+     ```
+     [Startup Check] FFmpeg verified: /usr/bin/ffmpeg
+     [Startup Check] yt-dlp verified: /usr/local/bin/yt-dlp
+     [YouTube Cookies] Successfully initialized and secured authentication cookies at server startup.
+     ```
+   - Query the health endpoint to confirm status:
+     ```bash
+     curl https://your-backend.railway.app/api/health
+     # Returns: {"ok":true,"cookiesLoaded":true,"proxyConfigured":false,"ytDlpVersion":"2026.08.19","hasFfmpeg":true}
+     ```
+
+---
+
+## Troubleshooting
+
+### "Bot / Sign-in Check" Error
+- **Cause:** YouTube actively monitors IP ranges assigned to major cloud hosting providers (AWS, GCP, Railway, DigitalOcean, Hetzner). When requests originate from datacenter subnets using unauthenticated web clients, YouTube returns a challenge: `Sign in to confirm you're not a bot`.
+- **Resolution:**
+  1. Ensure `YOUTUBE_COOKIES` is configured in Railway with fresh cookies exported from an incognito session.
+  2. PullMeta automatically sets `YOUTUBE_PLAYER_CLIENT=visionos,android,mweb` and `--js-runtimes node`, which avoids web challenges by default.
+  3. If cloud hosting IP ranges become aggressively blacklisted, configure `PROXY_URL` with a residential proxy provider.
+
+### Cookies Expiring
+- Google cookie sessions typically remain valid for several weeks or months unless logged out.
+- If downloads begin failing with temporary unavailability errors, re-export fresh cookies from your burner account following the steps above and update the `YOUTUBE_COOKIES` variable in Railway.
+
+---
+
+## Security Notes
+
+- **Never Commit Cookies:** Never store cookies in code, files committed to Git, or public issue trackers. Keep `.gitignore` updated.
+- **Use Burner Accounts:** Always use an isolated, non-primary Google account for exporting cookies.
+- **Auto-Rotation & Invalidation:** If cookies are ever accidentally exposed, immediately log out of the Google account across all devices to revoke all active session tokens.
+- **Sanitized Client Errors:** The backend sanitizes all technical errors. Internal paths, proxy credentials, and cookie details are logged strictly server-side and never returned to the frontend.
+
+---
+
+## Legal Disclaimer
+
+PullMeta and PullMeta Backend are open-source software tools developed strictly for educational, archival, and fair-use purposes. Users are solely responsible for ensuring that their downloads comply with YouTube's Terms of Service, applicable copyright laws, and intellectual property rights in their jurisdiction. The developers and contributors do not host, store, or distribute copyrighted video or audio content.
