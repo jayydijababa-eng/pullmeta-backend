@@ -91,12 +91,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 3. Media link parsing & ID validation (YouTube & Instagram)
+  // 3. YouTube link parsing & ID validation
   const parsed = parseMediaUrl(url);
   if (!parsed.success || !parsed.id) {
     return createErrorResponse(
       "INVALID_URL",
-      parsed.error || "Please enter a valid YouTube or Instagram link.",
+      parsed.error || "Please enter a valid YouTube link.",
       corsHeaders
     );
   }
@@ -153,7 +153,6 @@ export async function POST(req: NextRequest) {
     downloadResult = await executeDownload({
       videoId,
       url: originalUrl,
-      platform: parsed.platform,
       type: downloadType,
       quality: validQuality,
       format: validFormat,

@@ -6,10 +6,12 @@ import { spawnSync } from "node:child_process";
 
 let cachedYtDlpPath: string | null = null;
 let cachedFfmpegPath: string | null = null;
+let cachedFfprobePath: string | null = null;
 
 export function resetBinaryCache(): void {
   cachedYtDlpPath = null;
   cachedFfmpegPath = null;
+  cachedFfprobePath = null;
 }
 
 /**
@@ -220,4 +222,117 @@ export async function getFfmpegPath(): Promise<string | null> {
   }
 
   return null;
+}
+
+/**
+ * Resolves the path to the FFprobe executable.
+ * Checks environment variable, project bin folder, same directory as ffmpeg, and system PATH.
+ */
+export async function getFfprobePath(): Promise<string | null> {
+  if (
+    cachedFfprobePath &&
+    (cachedFfprobePath === "ffprobe" ||
+      cachedFfprobePath === "ffprobe.exe" ||
+      fs.existsSync(/*turbopackIgnore: true*/ cachedFfprobePath))
+  ) {
+    return cachedFfprobePath;
+  }
+
+  // 1. Explicit environment variable
+  if (process.env.FFPROBE_PATH && fs.existsSync(/*turbopackIgnore: true*/ process.env.FFPROBE_PATH)) {
+    cachedFfprobePath = process.env.FFPROBE_PATH;
+    return cachedFfprobePath;
+  }
+
+  const binName = process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
+
+  // 2. Look in the same folder where ffmpeg was found
+  const ffmpeg = await getFfmpegPath();
+  if (ffmpeg && (ffmpeg.includes("/") || ffmpeg.includes("\\"))) {
+    const siblingPath = path.join(path.dirname(ffmpeg), binName);
+    if (fs.existsSync(/*turbopackIgnore: true*/ siblingPath)) {
+      cachedFfprobePath = siblingPath;
+      return cachedFfprobePath;
+    }
+  }
+
+  // 3. Project bin/ folder
+  const projectBinPath = path.join(process.cwd(), "bin", binName);
+  if (fs.existsSync(/*turbopackIgnore: true*/ projectBinPath)) {
+    cachedFfprobePath = projectBinPath;
+    return cachedFfprobePath;
+  }
+
+  // 4. Common Linux paths
+  if (process.platform !== "win32") {
+    for (const linuxPath of ["/usr/bin/ffprobe", "/usr/local/bin/ffprobe"]) {
+      if (fs.existsSync(/*turbopackIgnore: true*/ linuxPath)) {
+        cachedFfprobePath = linuxPath;
+        return cachedFfprobePath;
+      }
+    }
+  }
+
+  // 5. System PATH
+  try {
+    const probe = spawnSync(binName, ["-version"], { timeout: 3000, windowsHide: true });
+    if (probe.status === 0) {
+      cachedFfprobePath = binName;
+      return cachedFfprobePath;
+    }
+  } catch {
+    // Not found in system PATH
+  }
+
+  return null;
+}
+
+/**
+ * Startup verification check that validates FFmpeg and yt-dlp presence.
+ * Fails loudly with actionable instructions if FFmpeg is missing.
+ */
+export async function checkServerBinariesStartup(): Promise<{
+  ffmpegFound: boolean;
+  ffmpegPath: string | null;
+  ytDlpFound: boolean;
+  ytDlpPath: string | null;
+  ffprobeFound: boolean;
+  ffprobePath: string | null;
+}> {
+  const ffmpeg = await getFfmpegPath().catch(() => null);
+  const ytDlp = await getYtDlpPath().catch(() => null);
+  const ffprobe = await getFfprobePath().catch(() => null);
+
+  if (!ffmpeg) {
+    console.error("\n" + "!".repeat(80));
+    console.error("[CRITICAL STARTUP FAILURE] FFmpeg is NOT installed or could not be found!");
+    console.error("Merging separate YouTube 1080p/4K video and audio streams requires FFmpeg.");
+    console.error("Without FFmpeg, YouTube video downloads will fail or fall back to low quality.");
+    console.error("Fix: Ensure ffmpeg is in your system PATH, or set the FFMPEG_PATH environment variable.");
+    console.error("!".repeat(80) + "\n");
+    if (process.env.NODE_ENV === "production" && process.env.STRICT_STARTUP_CHECKS === "true") {
+      throw new Error("FFmpeg is missing in production environment. Halting startup.");
+    }
+  } else {
+    console.log(`[Startup Check] FFmpeg verified: ${ffmpeg}`);
+  }
+
+  if (!ytDlp) {
+    console.warn("[Startup Check Warning] yt-dlp binary could not be resolved.");
+  } else {
+    console.log(`[Startup Check] yt-dlp verified: ${ytDlp}`);
+  }
+
+  if (ffprobe) {
+    console.log(`[Startup Check] ffprobe verified: ${ffprobe}`);
+  }
+
+  return {
+    ffmpegFound: Boolean(ffmpeg),
+    ffmpegPath: ffmpeg,
+    ytDlpFound: Boolean(ytDlp),
+    ytDlpPath: ytDlp,
+    ffprobeFound: Boolean(ffprobe),
+    ffprobePath: ffprobe,
+  };
 }

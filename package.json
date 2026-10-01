@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start -p 4000",
     "test": "vitest run",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "update-ytdlp": "yt-dlp -U"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",

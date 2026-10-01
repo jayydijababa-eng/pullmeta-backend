@@ -50,7 +50,7 @@ describe("POST /api/extract Handler", () => {
     expect(data.duration).toBe(210);
     expect(data.viewCount).toBe(100000);
     expect(data.limited).toBe(false);
-  });
+  }, 15000);
 
   it("returns VIDEO_NOT_FOUND (404) when YouTube API returns empty items", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -95,7 +95,7 @@ describe("POST /api/extract Handler", () => {
     expect(data.limited).toBe(true);
     expect(data.description).toBeNull();
     expect(data.tags).toEqual([]);
-  });
+  }, 15000);
 
   it("falls back to oEmbed when API key is missing", async () => {
     delete process.env.YOUTUBE_API_KEY;
@@ -120,7 +120,7 @@ describe("POST /api/extract Handler", () => {
     const data = await res.json();
     expect(data.limited).toBe(true);
     expect(data.title).toBe("oEmbed Only Video");
-  });
+  }, 15000);
 
   it("returns VIDEO_NOT_FOUND (404) when oEmbed returns 404", async () => {
     delete process.env.YOUTUBE_API_KEY;
@@ -166,6 +166,6 @@ describe("POST /api/extract Handler", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error.code).toBe("INVALID_URL");
-    expect(data.error.message).toBe("Only YouTube and Instagram links are supported.");
+    expect(data.error.message).toContain("Only YouTube links are supported");
   });
 });

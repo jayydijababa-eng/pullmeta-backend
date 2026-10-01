@@ -4,7 +4,7 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { ErrorCode } from "@/lib/errors";
-import { getYtDlpPath, getFfmpegPath } from "@/lib/binaries";
+import { getYtDlpPath, getFfmpegPath, getFfprobePath } from "@/lib/binaries";
 
 export type DownloadType = "video" | "audio";
 export type VideoQuality =
@@ -14,7 +14,9 @@ export type VideoQuality =
   | "1080p"
   | "720p"
   | "480p"
-  | "360p";
+  | "360p"
+  | "240p"
+  | "144p";
 export type AudioFormat = "mp3" | "m4a" | "wav" | "webm";
 export type AudioQuality = "320" | "256" | "192" | "128" | "best";
 
@@ -29,6 +31,8 @@ export const VALID_VIDEO_QUALITIES: VideoQuality[] = [
   "720p",
   "480p",
   "360p",
+  "240p",
+  "144p",
 ];
 
 export const VALID_AUDIO_FORMATS: AudioFormat[] = ["mp3", "m4a", "wav", "webm"];
@@ -91,48 +95,22 @@ export function getVideoFormatSelector(
     "720p": 720,
     "480p": 480,
     "360p": 360,
+    "240p": 240,
+    "144p": 144,
   };
 
   const normQuality = (quality || "1080p").toLowerCase();
-  const targetHeight = heightMap[normQuality] || (normQuality === "best" ? 1080 : undefined);
+  const targetHeight = heightMap[normQuality] || (normQuality === "best" ? 1080 : 1080);
 
-  if (targetHeight) {
-    if (hasFfmpeg) {
-      // 1. Prioritize exact target resolution (e.g. 1080p) in H.264 (avc1) + AAC first
-      // 2. Exact target resolution with any audio
-      // 3. Fallback to highest available resolution up to target resolution
-      // 4. Ultimate fallback to best available single/merged stream (bv*+ba/b) so downloads never fail
-      return {
-        requiresFfmpeg: true,
-        selector: `bv*[height=${targetHeight}][vcodec^=avc1]+ba[ext=m4a]/bv*[height=${targetHeight}]+ba/bv*[height<=${targetHeight}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=${targetHeight}]+ba/b[height<=${targetHeight}]/bv*+ba/b`,
-      };
-    }
-    return {
-      requiresFfmpeg: false,
-      selector: `best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
-    };
-  }
-
-  // 4K Ultra HD explicit request
-  if (normQuality === "4k" || normQuality === "2160p") {
-    if (hasFfmpeg) {
-      return {
-        requiresFfmpeg: true,
-        selector: `bv*[height=2160]+ba/bv*[height<=2160]+ba/bv*+ba/b`,
-      };
-    }
-  }
-
-  // Default: Universal Full HD (1080p H.264 + AAC)
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: true,
-      selector: `bv*[height=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height=1080]+ba/bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b`,
+      selector: `bestvideo[height<=${targetHeight}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]`,
     };
   }
   return {
     requiresFfmpeg: false,
-    selector: `best[height<=1080][vcodec!=none]/best[vcodec!=none]/best`,
+    selector: `best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]`,
   };
 }
 
@@ -353,7 +331,6 @@ export async function cleanupDirectory(dirPath: string): Promise<void> {
 export interface ExecuteDownloadOptions {
   videoId: string;
   url?: string;
-  platform?: "youtube" | "instagram";
   type?: DownloadType;
   quality?: string;
   format?: string;
@@ -405,8 +382,6 @@ export async function executeDownload(
     const outputTemplate = path.join(tempDir, "media.%(ext)s");
     const maxFilesizeMb = Math.max(1, Math.floor(maxSizeBytes / (1024 * 1024)));
 
-    const isInstagram = options.platform === "instagram" || (options.url && options.url.includes("instagram.com"));
-
     const args: string[] = [
       "--no-playlist",
       "--no-warnings",
@@ -414,7 +389,7 @@ export async function executeDownload(
       "--no-part",
     ];
 
-    if (!isInstagram && process.env.YOUTUBE_PLAYER_CLIENT) {
+    if (process.env.YOUTUBE_PLAYER_CLIENT) {
       args.push("--extractor-args", `youtube:player_client=${process.env.YOUTUBE_PLAYER_CLIENT}`);
     }
 
@@ -424,14 +399,10 @@ export async function executeDownload(
       args.push("--proxy", (process.env.HTTPS_PROXY || process.env.HTTP_PROXY)!);
     }
 
-    const cookieEnv = isInstagram
-      ? (process.env.INSTAGRAM_COOKIES || process.env.COOKIES)
-      : (process.env.YOUTUBE_COOKIES || process.env.COOKIES);
-
+    const cookieEnv = process.env.YOUTUBE_COOKIES || process.env.COOKIES;
     if (cookieEnv) {
-      const cookiePath = path.join(tempDir, isInstagram ? ".ig_cookies.txt" : ".cookies.txt");
-      const defaultDomain = isInstagram ? ".instagram.com" : ".youtube.com";
-      const normalizedCookies = formatCookiesForYtDlp(cookieEnv, defaultDomain);
+      const cookiePath = path.join(tempDir, ".cookies.txt");
+      const normalizedCookies = formatCookiesForYtDlp(cookieEnv, ".youtube.com");
       await fs.promises.writeFile(cookiePath, normalizedCookies, "utf-8");
       args.push("--cookies", cookiePath);
     }
@@ -607,15 +578,37 @@ export async function executeDownload(
             );
           }
 
+          if (lower.includes("sign in to confirm your age") || lower.includes("age-restricted")) {
+            return reject(
+              new DownloadError(
+                "DOWNLOAD_UNAVAILABLE",
+                "This video is age-restricted and requires YouTube sign-in. It cannot be downloaded through public serverless proxies."
+              )
+            );
+          }
+
           if (
-            lower.includes("instagram sent an empty media response") ||
-            lower.includes("instagram api is not granting access") ||
-            (lower.includes("instagram") && (lower.includes("login") || lower.includes("cookies") || lower.includes("empty media")))
+            lower.includes("not available in your country") ||
+            lower.includes("blocked in your country") ||
+            lower.includes("geo-restricted")
           ) {
             return reject(
               new DownloadError(
                 "DOWNLOAD_UNAVAILABLE",
-                "Instagram has restricted cloud access to this Reel (requires Instagram login cookies). YouTube downloads work 100% freely without login."
+                "This video is region-restricted or blocked in the server location."
+              )
+            );
+          }
+
+          if (
+            lower.includes("this live event has ended") ||
+            lower.includes("live stream recording") ||
+            lower.includes("is a live stream")
+          ) {
+            return reject(
+              new DownloadError(
+                "DOWNLOAD_UNAVAILABLE",
+                "Active or newly completed live streams cannot be downloaded until YouTube finishes processing the archive."
               )
             );
           }
@@ -692,6 +685,16 @@ export async function executeDownload(
       );
     }
 
+    // Verify downloaded media with ffprobe (height, codecs, audio stream presence)
+    const verification = await verifyDownloadedMedia(mediaFilePath, type, quality);
+    if (!verification.valid) {
+      console.warn(`[PullMeta Verification Mismatch] ${verification.error}`);
+      throw new DownloadError(
+        "DOWNLOAD_FAILED",
+        verification.error || "The downloaded media file failed stream verification."
+      );
+    }
+
     // Read metadata title if written
     let videoTitle = "";
     try {
@@ -742,4 +745,154 @@ export async function executeDownload(
     releaseDownloadSlot();
     throw err;
   }
+}
+
+export interface MediaVerification {
+  valid: boolean;
+  actualHeight: number | null;
+  videoCodec: string | null;
+  hasAudio: boolean;
+  audioCodec: string | null;
+  error?: string;
+}
+
+/**
+ * Inspects the downloaded media file using ffprobe to verify streams, codecs, and resolution.
+ */
+export async function verifyDownloadedMedia(
+  filePath: string,
+  type: "video" | "audio",
+  expectedQuality?: string
+): Promise<MediaVerification> {
+  const ffprobePath = await getFfprobePath();
+  if (!ffprobePath) {
+    return { valid: true, actualHeight: null, videoCodec: null, hasAudio: true, audioCodec: null };
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn(
+      ffprobePath,
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=index,codec_type,codec_name,width,height",
+        "-of",
+        "json",
+        filePath,
+      ],
+      { windowsHide: true }
+    );
+
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf-8");
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        return resolve({ valid: true, actualHeight: null, videoCodec: null, hasAudio: true, audioCodec: null });
+      }
+
+      try {
+        const parsed = JSON.parse(output);
+        const streams: Array<{
+          codec_type: string;
+          codec_name: string;
+          width?: number;
+          height?: number;
+        }> = parsed.streams || [];
+
+        const videoStream = streams.find((s) => s.codec_type === "video");
+        const audioStream = streams.find((s) => s.codec_type === "audio");
+
+        if (type === "video") {
+          if (!videoStream) {
+            return resolve({
+              valid: false,
+              actualHeight: null,
+              videoCodec: null,
+              hasAudio: Boolean(audioStream),
+              audioCodec: audioStream?.codec_name || null,
+              error: "Downloaded media contains no video stream.",
+            });
+          }
+
+          if (!audioStream) {
+            return resolve({
+              valid: false,
+              actualHeight: videoStream.height || null,
+              videoCodec: videoStream.codec_name,
+              hasAudio: false,
+              audioCodec: null,
+              error: "Downloaded video is missing audio stream.",
+            });
+          }
+
+          const h = videoStream.height || 0;
+          const w = videoStream.width || 0;
+          const resolutionDim = Math.min(w, h) > 0 ? Math.min(w, h) : h;
+
+          const heightMap: Record<string, number> = {
+            "2160p": 2160,
+            "1440p": 1440,
+            "1080p": 1080,
+            "720p": 720,
+            "480p": 480,
+            "360p": 360,
+            "240p": 240,
+            "144p": 144,
+          };
+          const target = expectedQuality ? heightMap[expectedQuality.toLowerCase()] : undefined;
+
+          if (target && target >= 720 && resolutionDim < 720 && resolutionDim < target * 0.7) {
+            console.warn(
+              `[PullMeta Quality Mismatch] Requested ${expectedQuality} (${target}p) but ffprobe measured ${resolutionDim}p (${w}x${h}, codec: ${videoStream.codec_name})`
+            );
+            return resolve({
+              valid: false,
+              actualHeight: resolutionDim,
+              videoCodec: videoStream.codec_name,
+              hasAudio: true,
+              audioCodec: audioStream.codec_name,
+              error: `Resolution mismatch: Requested ${expectedQuality}, but actual video resolution is ${resolutionDim}p (${w}x${h}). YouTube restricted the high-definition stream for this video.`,
+            });
+          }
+
+          return resolve({
+            valid: true,
+            actualHeight: resolutionDim,
+            videoCodec: videoStream.codec_name,
+            hasAudio: true,
+            audioCodec: audioStream.codec_name,
+          });
+        }
+
+        if (!audioStream) {
+          return resolve({
+            valid: false,
+            actualHeight: null,
+            videoCodec: null,
+            hasAudio: false,
+            audioCodec: null,
+            error: "Downloaded media contains no audio stream.",
+          });
+        }
+
+        return resolve({
+          valid: true,
+          actualHeight: null,
+          videoCodec: null,
+          hasAudio: true,
+          audioCodec: audioStream.codec_name,
+        });
+      } catch {
+        return resolve({ valid: true, actualHeight: null, videoCodec: null, hasAudio: true, audioCodec: null });
+      }
+    });
+
+    child.on("error", () => {
+      resolve({ valid: true, actualHeight: null, videoCodec: null, hasAudio: true, audioCodec: null });
+    });
+  });
 }

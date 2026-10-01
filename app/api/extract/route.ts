@@ -10,6 +10,7 @@ import {
   parseIsoDurationSeconds,
   buildThumbnails,
   fetchWithTimeout,
+  probeVideoFormats,
   ExtractedVideoData,
 } from "@/lib/youtube";
 
@@ -78,67 +79,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 3. Media link parsing & ID validation (YouTube & Instagram)
+  // 3. YouTube link parsing & ID validation
   const parsed = parseMediaUrl(url);
   if (!parsed.success || !parsed.id) {
     return createErrorResponse(
       "INVALID_URL",
-      parsed.error || "Please enter a valid YouTube or Instagram video link.",
+      parsed.error || "Please enter a valid YouTube video link.",
       corsHeaders
     );
-  }
-
-  // Handle Instagram platform
-  if (parsed.platform === "instagram") {
-    const cacheKey = `extract:ig_${parsed.id}`;
-    const cachedData = cache.get<ExtractedVideoData>(cacheKey);
-    if (cachedData) {
-      return NextResponse.json(cachedData, {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          "X-Cache": "HIT",
-        },
-      });
-    }
-
-    const igMetadata: ExtractedVideoData = {
-      videoId: `ig_${parsed.id}`,
-      platform: "instagram",
-      originalUrl: parsed.originalUrl,
-      title: `Instagram Reel / Video (${parsed.id})`,
-      description: "Direct high-resolution Instagram Reel stream ready to download without watermark.",
-      tags: ["Instagram", "Reel", "Video", "Social"],
-      thumbnails: [
-        {
-          quality: "maxres",
-          url: "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=1080&q=80",
-          width: 1080,
-          height: 1080,
-        },
-        {
-          quality: "high",
-          url: "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=640&q=80",
-          width: 640,
-          height: 640,
-        },
-      ],
-      channel: "Instagram Creator",
-      publishedAt: null,
-      duration: null,
-      viewCount: null,
-      categoryId: null,
-      limited: true,
-    };
-
-    cache.set(cacheKey, igMetadata);
-    return NextResponse.json(igMetadata, {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        "X-Cache": "MISS",
-      },
-    });
   }
 
   const videoId = parsed.id;
@@ -255,7 +203,16 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 7. Store in Cache (10 min TTL)
+  // 7. Probe real formats and file size estimates via yt-dlp
+  try {
+    const formatsData = await probeVideoFormats(videoId, metadata.duration);
+    metadata.availableQualities = formatsData.availableQualities;
+    metadata.audioOptions = formatsData.audioOptions;
+  } catch {
+    // Non-fatal, fallback provided in probeVideoFormats
+  }
+
+  // 8. Store in Cache (10 min TTL)
   cache.set(cacheKey, metadata);
 
   return NextResponse.json(metadata, {

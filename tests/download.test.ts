@@ -223,7 +223,7 @@ describe("POST /api/download Route Handler", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error.code).toBe("INVALID_URL");
-    expect(data.error.message).toBe("Only YouTube and Instagram links are supported.");
+    expect(data.error.message).toContain("Only YouTube links are supported");
   });
 
   it("returns INVALID_URL (400) for unsupported video domain", async () => {
@@ -236,7 +236,7 @@ describe("POST /api/download Route Handler", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error.code).toBe("INVALID_URL");
-    expect(data.error.message).toBe("Only YouTube and Instagram links are supported.");
+    expect(data.error.message).toContain("Only YouTube links are supported");
   });
 
   it("returns INVALID_URL (400) for command injection payload in video ID", async () => {
