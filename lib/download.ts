@@ -218,6 +218,81 @@ export function getAudioFormatConfig(
 }
 
 /**
+ * Normalizes cookies to the standard Netscape HTTP Cookie format expected by yt-dlp.
+ * Automatically detects and converts JSON-formatted cookies (e.g. from Cookie-Editor / DevTools)
+ * as well as base64-encoded or raw Netscape strings.
+ */
+export function formatCookiesForYtDlp(raw: string, defaultDomain = ".youtube.com"): string {
+  if (!raw || typeof raw !== "string") return "";
+
+  let content = raw.trim();
+  if (!content) return "";
+
+  // Strip wrapping quotes if added by shell or env variable
+  if (
+    (content.startsWith('"') && content.endsWith('"')) ||
+    (content.startsWith("'") && content.endsWith("'"))
+  ) {
+    content = content.slice(1, -1).trim();
+  }
+
+  // Handle base64: prefix
+  if (content.startsWith("base64:")) {
+    try {
+      content = Buffer.from(content.slice(7), "base64").toString("utf-8").trim();
+    } catch {
+      // ignore
+    }
+  }
+
+  // Check if content is JSON
+  if (content.startsWith("[") || content.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(content);
+      const cookieList = Array.isArray(parsed) ? parsed : [parsed];
+
+      const lines: string[] = [
+        "# Netscape HTTP Cookie File",
+        "# https://curl.se/docs/http-cookies.html",
+        "",
+      ];
+
+      for (const c of cookieList) {
+        if (!c || typeof c !== "object") continue;
+        const name = c.name || c.key;
+        const value = c.value !== undefined ? String(c.value) : "";
+        if (!name) continue;
+
+        let domain = c.domain || c.host || defaultDomain;
+        const isHttpOnly = Boolean(c.httpOnly);
+        const prefix = isHttpOnly ? "#HttpOnly_" : "";
+        const includeSubdomains = domain.startsWith(".") ? "TRUE" : "FALSE";
+        const path = c.path || "/";
+        const secure = c.secure !== false ? "TRUE" : "FALSE";
+        const expiry = Math.floor(
+          c.expirationDate || c.expires || c.expiry || Date.now() / 1000 + 365 * 24 * 3600
+        );
+
+        lines.push(
+          `${prefix}${domain}\t${includeSubdomains}\t${path}\t${secure}\t${expiry}\t${name}\t${value}`
+        );
+      }
+
+      return lines.join("\n") + "\n";
+    } catch {
+      // not valid JSON, proceed as plain text
+    }
+  }
+
+  // Ensure header if not already present
+  if (!content.includes("# Netscape HTTP Cookie File")) {
+    content = `# Netscape HTTP Cookie File\n# https://curl.se/docs/http-cookies.html\n\n${content}`;
+  }
+
+  return content;
+}
+
+/**
  * Generates a safe, sanitized filename from the title.
  * Strips path traversal characters, control characters, and reserved filesystem symbols.
  */
@@ -354,11 +429,9 @@ export async function executeDownload(
 
     if (cookieEnv) {
       const cookiePath = path.join(tempDir, isInstagram ? "ig_cookies.txt" : "cookies.txt");
-      let cookieContent = cookieEnv;
-      if (cookieContent.startsWith("base64:")) {
-        cookieContent = Buffer.from(cookieContent.slice(7), "base64").toString("utf-8");
-      }
-      await fs.promises.writeFile(cookiePath, cookieContent, "utf-8");
+      const defaultDomain = isInstagram ? ".instagram.com" : ".youtube.com";
+      const normalizedCookies = formatCookiesForYtDlp(cookieEnv, defaultDomain);
+      await fs.promises.writeFile(cookiePath, normalizedCookies, "utf-8");
       args.push("--cookies", cookiePath);
     }
 

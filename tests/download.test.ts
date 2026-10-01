@@ -9,6 +9,7 @@ import { resetRateLimitStore } from "../lib/ratelimit";
 import {
   sanitizeDownloadFilename,
   getFormatSelector,
+  formatCookiesForYtDlp,
   DownloadError,
 } from "../lib/download";
 
@@ -52,6 +53,56 @@ describe("Download Service Unit Tests", () => {
       const result = sanitizeDownloadFilename(longTitle, "dQw4w9WgXcQ", "1080p", "mp4");
       expect(result.length).toBeLessThanOrEqual(85); // 80 chars + .mp4
       expect(result).toBe(`${"A".repeat(80)}.mp4`);
+    });
+  });
+
+  describe("formatCookiesForYtDlp", () => {
+    it("converts JSON formatted cookies into valid Netscape format", () => {
+      const jsonCookies = JSON.stringify([
+        {
+          domain: ".youtube.com",
+          name: "SID",
+          value: "test_sid_123",
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          expirationDate: 1800000000,
+        },
+        {
+          domain: ".youtube.com",
+          name: "HSID",
+          value: "test_hsid_456",
+          path: "/",
+          secure: false,
+          httpOnly: false,
+          expirationDate: 1800000000,
+        },
+      ]);
+
+      const netscape = formatCookiesForYtDlp(jsonCookies);
+      expect(netscape).toContain("# Netscape HTTP Cookie File");
+      expect(netscape).toContain("#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1800000000\tSID\ttest_sid_123");
+      expect(netscape).toContain(".youtube.com\tTRUE\t/\tFALSE\t1800000000\tHSID\ttest_hsid_456");
+    });
+
+    it("leaves existing Netscape formatted cookies intact with header", () => {
+      const rawNetscape = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\txyz\n";
+      const result = formatCookiesForYtDlp(rawNetscape);
+      expect(result).toContain("# Netscape HTTP Cookie File");
+      expect(result).toContain(".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\txyz");
+    });
+
+    it("handles base64 encoded JSON cookies", () => {
+      const json = JSON.stringify([{ domain: ".youtube.com", name: "PREF", value: "f1=50000000" }]);
+      const base64 = `base64:${Buffer.from(json).toString("base64")}`;
+      const result = formatCookiesForYtDlp(base64);
+      expect(result).toContain("# Netscape HTTP Cookie File");
+      expect(result).toContain("PREF\tf1=50000000");
+    });
+
+    it("handles empty or whitespace strings safely", () => {
+      expect(formatCookiesForYtDlp("")).toBe("");
+      expect(formatCookiesForYtDlp("   ")).toBe("");
     });
   });
 
