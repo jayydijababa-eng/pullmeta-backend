@@ -93,13 +93,15 @@ export function getVideoFormatSelector(
     "360p": 360,
   };
 
-  const targetHeight = heightMap[quality.toLowerCase()];
+  const normQuality = (quality || "best").toLowerCase();
+  const targetHeight = heightMap[normQuality];
 
   if (targetHeight) {
     if (hasFfmpeg) {
+      // Prioritize H.264 (avc1) for maximum native playback compatibility on Windows Media Player, iOS, etc.
       return {
         requiresFfmpeg: true,
-        selector: `bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
+        selector: `bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio/bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}]/best`,
       };
     }
     return {
@@ -108,11 +110,22 @@ export function getVideoFormatSelector(
     };
   }
 
-  // "best" or default: select the absolute highest resolution video + best audio
+  // 4K Ultra HD explicit request
+  if (normQuality === "4k" || normQuality === "2160p") {
+    if (hasFfmpeg) {
+      return {
+        requiresFfmpeg: true,
+        selector: `bestvideo[height<=2160][vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best`,
+      };
+    }
+  }
+
+  // "best" or default:
+  // Universal Full HD (1080p H.264 + AAC) - plays out-of-the-box on Windows Media Player, Mac, iOS, Android!
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: true,
-      selector: `bestvideo[vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best[vcodec!=none][acodec!=none]/best[vcodec!=none]/best`,
+      selector: `bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo[height<=1080][vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best`,
     };
   }
   return {
@@ -262,6 +275,8 @@ export async function cleanupDirectory(dirPath: string): Promise<void> {
 
 export interface ExecuteDownloadOptions {
   videoId: string;
+  url?: string;
+  platform?: "youtube" | "instagram";
   type?: DownloadType;
   quality?: string;
   format?: string;
@@ -357,6 +372,8 @@ export async function executeDownload(
       args.push("-f", formatInfo.selector);
       if (ffmpegPath) {
         args.push("--merge-output-format", "mp4");
+        // Ensure merged audio is always universally playable AAC in the MP4 container (plays on Windows Media Player, iOS, etc.)
+        args.push("--postprocessor-args", "Merger:-c:a aac");
       }
       expectedExt = "mp4";
       defaultContentType = "video/mp4";
@@ -366,13 +383,15 @@ export async function executeDownload(
       args.push("--ffmpeg-location", ffmpegPath);
     }
 
+    const targetUrl = options.url || `https://www.youtube.com/watch?v=${videoId}`;
+
     args.push(
       "--max-filesize",
       `${maxFilesizeMb}M`,
       "-o",
       outputTemplate,
       "--write-info-json",
-      `https://www.youtube.com/watch?v=${videoId}`
+      targetUrl
     );
 
     await new Promise<void>((resolve, reject) => {

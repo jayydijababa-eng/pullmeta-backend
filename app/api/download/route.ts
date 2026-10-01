@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { createErrorResponse } from "@/lib/errors";
 import { checkRateLimit } from "@/lib/ratelimit";
-import { parseYouTubeVideoId } from "@/lib/youtube";
+import { parseMediaUrl, parseYouTubeVideoId } from "@/lib/youtube";
 import {
   DownloadType,
   VideoQuality,
@@ -91,17 +91,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 3. YouTube link parsing & ID validation using existing parser
-  const parsed = parseYouTubeVideoId(url);
-  if (!parsed.success || !parsed.videoId) {
+  // 3. Media link parsing & ID validation (YouTube & Instagram)
+  const parsed = parseMediaUrl(url);
+  if (!parsed.success || !parsed.id) {
     return createErrorResponse(
       "INVALID_URL",
-      parsed.error || "Only YouTube links are supported.",
+      parsed.error || "Please enter a valid YouTube or Instagram link.",
       corsHeaders
     );
   }
 
-  const videoId = parsed.videoId;
+  const videoId = parsed.id;
+  const originalUrl = parsed.originalUrl;
 
   // 4. Determine download type (video vs audio)
   const isAudio =
@@ -151,6 +152,8 @@ export async function POST(req: NextRequest) {
   try {
     downloadResult = await executeDownload({
       videoId,
+      url: originalUrl,
+      platform: parsed.platform,
       type: downloadType,
       quality: validQuality,
       format: validFormat,

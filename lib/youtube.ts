@@ -7,6 +7,8 @@ export interface ThumbnailItem {
 
 export interface ExtractedVideoData {
   videoId: string;
+  platform?: "youtube" | "instagram";
+  originalUrl?: string;
   title: string;
   description: string | null;
   tags: string[];
@@ -28,6 +30,72 @@ const YOUTUBE_HOSTS = new Set([
   "music.youtube.com",
   "youtu.be",
 ]);
+
+const INSTAGRAM_HOSTS = new Set([
+  "instagram.com",
+  "www.instagram.com",
+  "m.instagram.com",
+]);
+
+export interface MediaParseResult {
+  success: boolean;
+  platform: "youtube" | "instagram";
+  id?: string;
+  originalUrl: string;
+  error?: string;
+}
+
+export function parseMediaUrl(rawInput: string): MediaParseResult {
+  if (!rawInput || typeof rawInput !== "string") {
+    return { success: false, platform: "youtube", originalUrl: "", error: "Please provide a valid YouTube or Instagram link." };
+  }
+
+  const trimmed = rawInput.trim();
+  if (trimmed.length > 500) {
+    return { success: false, platform: "youtube", originalUrl: trimmed, error: "URL exceeds maximum permitted length." };
+  }
+
+  let urlString = trimmed;
+  if (!/^https?:\/\//i.test(urlString)) {
+    urlString = `https://${urlString}`;
+  }
+
+  try {
+    const parsed = new URL(urlString);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+
+    // 1. Instagram Reel / Video / Post detection
+    if (host === "instagram.com") {
+      const match = parsed.pathname.match(/\/(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
+      if (match && match[2]) {
+        return {
+          success: true,
+          platform: "instagram",
+          id: match[2],
+          originalUrl: `https://www.instagram.com/${match[1].toLowerCase()}/${match[2]}/`,
+        };
+      }
+      return {
+        success: false,
+        platform: "instagram",
+        originalUrl: trimmed,
+        error: "Please provide a valid Instagram Reel, Video, or Post link.",
+      };
+    }
+  } catch {
+    // Continue to YouTube parser
+  }
+
+  // 2. YouTube detection
+  const yt = parseYouTubeVideoId(trimmed);
+  return {
+    success: yt.success,
+    platform: "youtube",
+    id: yt.videoId,
+    originalUrl: yt.videoId ? `https://www.youtube.com/watch?v=${yt.videoId}` : trimmed,
+    error: yt.error,
+  };
+}
 
 export function parseYouTubeVideoId(rawInput: string): {
   success: boolean;
@@ -64,7 +132,7 @@ export function parseYouTubeVideoId(rawInput: string): {
 
   const hostname = parsedUrl.hostname.toLowerCase();
   if (!YOUTUBE_HOSTS.has(hostname)) {
-    return { success: false, error: "Only YouTube links are supported." };
+    return { success: false, error: "Only YouTube and Instagram links are supported." };
   }
 
   let candidateId: string | null = null;
