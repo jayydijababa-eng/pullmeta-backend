@@ -107,4 +107,12 @@ npm run dev # Starts on port 4000
 ```
 
 ## Production Deployment
-Deploy with Root Directory set to `backend` on Vercel.
+
+- **Railway (Recommended for persistent downloads & Docker)**:
+  - Root directory: `/backend`
+  - Builder: Uses `Dockerfile` automatically (configured via `railway.json`).
+  - Required Variables: `ALLOWED_ORIGIN`, `YOUTUBE_API_KEY`.
+  - Health check path: `/api/health`.
+- **Vercel (Serverless)**:
+  - Deploy with Root Directory set to `backend`.
+
