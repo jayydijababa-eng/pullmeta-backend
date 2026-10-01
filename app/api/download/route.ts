@@ -111,12 +111,12 @@ export async function POST(req: NextRequest) {
   const downloadType: DownloadType = isAudio ? "audio" : "video";
 
   // Validate parameters based on type
-  let validQuality: VideoQuality = "best";
+  let validQuality: VideoQuality = "1080p";
   let validFormat: AudioFormat = "mp3";
   let validAudioQuality: AudioQuality = "best";
 
   if (downloadType === "video") {
-    const rawQuality = (quality || "best").toString().trim().toLowerCase() as VideoQuality;
+    const rawQuality = (quality || "1080p").toString().trim().toLowerCase() as VideoQuality;
     if (!VALID_VIDEO_QUALITIES.includes(rawQuality)) {
       return createErrorResponse(
         "INVALID_URL",

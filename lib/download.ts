@@ -93,20 +93,21 @@ export function getVideoFormatSelector(
     "360p": 360,
   };
 
-  const normQuality = (quality || "best").toLowerCase();
-  const targetHeight = heightMap[normQuality];
+  const normQuality = (quality || "1080p").toLowerCase();
+  const targetHeight = heightMap[normQuality] || (normQuality === "best" ? 1080 : undefined);
 
   if (targetHeight) {
     if (hasFfmpeg) {
-      // Prioritize H.264 (avc1) for maximum native playback compatibility on Windows Media Player, iOS, etc.
+      // Prioritize exact target resolution (e.g. 1080p) in H.264 (avc1) + AAC first,
+      // then exact target resolution in any codec, then fallback up to target resolution.
       return {
         requiresFfmpeg: true,
-        selector: `bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio/bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}]/best`,
+        selector: `bestvideo[height=${targetHeight}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=${targetHeight}][vcodec^=avc1]+bestaudio/bestvideo[height=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height=${targetHeight}]+bestaudio/bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=${targetHeight}]+bestaudio/bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}]/best`,
       };
     }
     return {
       requiresFfmpeg: false,
-      selector: `best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
+      selector: `best[height=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
     };
   }
 
@@ -115,22 +116,21 @@ export function getVideoFormatSelector(
     if (hasFfmpeg) {
       return {
         requiresFfmpeg: true,
-        selector: `bestvideo[height<=2160][vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best`,
+        selector: `bestvideo[height=2160][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=2160][vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best`,
       };
     }
   }
 
-  // "best" or default:
-  // Universal Full HD (1080p H.264 + AAC) - plays out-of-the-box on Windows Media Player, Mac, iOS, Android!
+  // Default: Universal Full HD (1080p H.264 + AAC)
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: true,
-      selector: `bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo[height<=1080][vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best`,
+      selector: `bestvideo[height=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best`,
     };
   }
   return {
     requiresFfmpeg: false,
-    selector: `best[vcodec!=none][acodec!=none]/best[vcodec!=none]/best`,
+    selector: `best[height<=1080][vcodec!=none][acodec!=none]/best[vcodec!=none]/best`,
   };
 }
 
@@ -343,9 +343,14 @@ export async function executeDownload(
       args.push("--proxy", (process.env.HTTPS_PROXY || process.env.HTTP_PROXY)!);
     }
 
-    if (process.env.YOUTUBE_COOKIES) {
-      const cookiePath = path.join(tempDir, "cookies.txt");
-      let cookieContent = process.env.YOUTUBE_COOKIES;
+    const isInstagram = options.platform === "instagram" || (options.url && options.url.includes("instagram.com"));
+    const cookieEnv = isInstagram
+      ? (process.env.INSTAGRAM_COOKIES || process.env.COOKIES)
+      : (process.env.YOUTUBE_COOKIES || process.env.COOKIES);
+
+    if (cookieEnv) {
+      const cookiePath = path.join(tempDir, isInstagram ? "ig_cookies.txt" : "cookies.txt");
+      let cookieContent = cookieEnv;
       if (cookieContent.startsWith("base64:")) {
         cookieContent = Buffer.from(cookieContent.slice(7), "base64").toString("utf-8");
       }
@@ -520,6 +525,19 @@ export async function executeDownload(
               new DownloadError(
                 "DOWNLOAD_UNAVAILABLE",
                 "YouTube has applied a bot/sign-in check on this cloud server for this video. Try selecting 360p or Audio, or a different video."
+              )
+            );
+          }
+
+          if (
+            lower.includes("instagram sent an empty media response") ||
+            lower.includes("instagram api is not granting access") ||
+            (lower.includes("instagram") && (lower.includes("login") || lower.includes("cookies") || lower.includes("empty media")))
+          ) {
+            return reject(
+              new DownloadError(
+                "DOWNLOAD_UNAVAILABLE",
+                "Instagram has restricted cloud access to this Reel (requires Instagram login cookies). YouTube downloads work 100% freely without login."
               )
             );
           }
