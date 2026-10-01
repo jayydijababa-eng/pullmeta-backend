@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { getYtDlpPath } from "@/lib/binaries";
 import { createRequestCookieFile, getProxyUrl } from "@/lib/cookies";
+import { cache } from "@/lib/cache";
 
 export interface ThumbnailItem {
   quality: "maxres" | "standard" | "high" | "medium";
@@ -233,6 +234,16 @@ export async function probeVideoFormats(
   availableQualities: VideoQualityOption[];
   audioOptions: AudioDownloadOption[];
 }> {
+  // Check 10-minute cache first
+  const cacheKey = `probe:formats:${videoId}`;
+  const cached = cache.get<{
+    availableQualities: VideoQualityOption[];
+    audioOptions: AudioDownloadOption[];
+  }>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   let cleanupCookie: (() => Promise<void>) | null = null;
   try {
     const ytDlpPath = await getYtDlpPath();
@@ -247,6 +258,8 @@ export async function probeVideoFormats(
       "--skip-download",
       "--js-runtimes",
       "node",
+      "--sleep-requests",
+      process.env.YT_DLP_SLEEP_REQUESTS || "1.5",
       "--extractor-args",
       `youtube:player_client=${ytClients}`,
       `https://www.youtube.com/watch?v=${videoId}`,
@@ -400,8 +413,11 @@ export async function probeVideoFormats(
       },
     ];
 
-    return { availableQualities: qualityOptions, audioOptions };
-  } catch {
+    const result = { availableQualities: qualityOptions, audioOptions };
+    cache.set(cacheKey, result, 10 * 60 * 1000); // 10 minutes TTL
+    return result;
+  } catch (err) {
+    console.error(`[PullMeta Probe Warning] Video ${videoId}:`, err instanceof Error ? err.message : err);
     return getFallbackFormatOptions();
   } finally {
     if (cleanupCookie) {

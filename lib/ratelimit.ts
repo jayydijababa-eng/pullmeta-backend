@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis";
+export { getClientIp, isValidIp, cleanIp, isPrivateOrInternalIp } from "./ip";
 
 export type RateLimitAction = "extract" | "thumbnail" | "download";
 
@@ -9,14 +10,26 @@ export interface RateLimitResult {
 }
 
 const LIMITS: Record<RateLimitAction, { max: number; windowMs: number }> = {
-  extract: { max: 20, windowMs: 10 * 60 * 1000 }, // 20 per 10 min
-  thumbnail: { max: 60, windowMs: 10 * 60 * 1000 }, // 60 per 10 min
+  extract: {
+    max: process.env.RATE_LIMIT_EXTRACT_MAX
+      ? parseInt(process.env.RATE_LIMIT_EXTRACT_MAX, 10)
+      : 30,
+    windowMs: process.env.RATE_LIMIT_EXTRACT_WINDOW_MS
+      ? parseInt(process.env.RATE_LIMIT_EXTRACT_WINDOW_MS, 10)
+      : 15 * 60 * 1000, // 30 per 15 min
+  },
+  thumbnail: {
+    max: 100,
+    windowMs: 15 * 60 * 1000,
+  },
   download: {
     max: process.env.RATE_LIMIT_DOWNLOAD_MAX
       ? parseInt(process.env.RATE_LIMIT_DOWNLOAD_MAX, 10)
-      : 5,
-    windowMs: 10 * 60 * 1000,
-  }, // 5 per 10 min default
+      : 20,
+    windowMs: process.env.RATE_LIMIT_DOWNLOAD_WINDOW_MS
+      ? parseInt(process.env.RATE_LIMIT_DOWNLOAD_WINDOW_MS, 10)
+      : 15 * 60 * 1000, // 20 per 15 min default (configurable)
+  },
 };
 
 // In-memory sliding log storage

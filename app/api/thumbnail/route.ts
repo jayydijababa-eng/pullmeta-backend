@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { createErrorResponse } from "@/lib/errors";
-import { checkRateLimit } from "@/lib/ratelimit";
+import { checkRateLimit, getClientIp } from "@/lib/ratelimit";
 import { fetchWithTimeout } from "@/lib/youtube";
 
 export const runtime = "nodejs";
@@ -16,18 +16,6 @@ const QUALITY_TO_FILENAME: Record<string, string> = {
 };
 
 const VALID_QUALITIES = ["maxres", "standard", "high", "medium", "best"];
-
-function getClientIp(req: NextRequest): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
-  }
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp) {
-    return realIp.trim();
-  }
-  return "127.0.0.1";
-}
 
 export async function OPTIONS(req: NextRequest) {
   return handleCorsPreflight(req);

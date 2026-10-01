@@ -59,26 +59,87 @@ export class DownloadError extends Error {
   }
 }
 
-// In-memory concurrency limiter (defaults to 2 for serverless, configurable on Docker)
+interface QueuedSlot {
+  resolve: (value: boolean) => void;
+  reject: (err: any) => void;
+  timer: NodeJS.Timeout;
+}
+
+// In-memory concurrency limiter & queue (defaults to 3 concurrent yt-dlp jobs)
 let activeDownloads = 0;
 const MAX_CONCURRENT_DOWNLOADS = process.env.MAX_CONCURRENT_DOWNLOADS
   ? parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10)
-  : 2;
+  : 3;
 
-export function acquireDownloadSlot(): boolean {
-  if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+const downloadQueue: QueuedSlot[] = [];
+
+export function getActiveDownloadsCount(): number {
+  return activeDownloads;
+}
+
+export function getDownloadQueueLength(): number {
+  return downloadQueue.length;
+}
+
+export async function acquireDownloadSlot(
+  timeoutMs = 15000,
+  abortSignal?: AbortSignal
+): Promise<boolean> {
+  if (activeDownloads < MAX_CONCURRENT_DOWNLOADS) {
+    activeDownloads++;
+    return true;
+  }
+
+  // Maximum 10 queued requests to prevent memory buildup
+  if (downloadQueue.length >= 10) {
     return false;
   }
-  activeDownloads++;
-  return true;
+
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const idx = downloadQueue.findIndex((q) => q.resolve === resolve);
+      if (idx !== -1) {
+        downloadQueue.splice(idx, 1);
+      }
+      resolve(false);
+    }, timeoutMs);
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const idx = downloadQueue.findIndex((q) => q.resolve === resolve);
+      if (idx !== -1) {
+        downloadQueue.splice(idx, 1);
+      }
+      reject(new DownloadError("DOWNLOAD_FAILED", "Download was aborted."));
+    };
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        return onAbort();
+      }
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    downloadQueue.push({ resolve, reject, timer });
+  });
 }
 
 export function releaseDownloadSlot(): void {
   activeDownloads = Math.max(0, activeDownloads - 1);
-}
-
-export function getActiveDownloadsCount(): number {
-  return activeDownloads;
+  if (downloadQueue.length > 0 && activeDownloads < MAX_CONCURRENT_DOWNLOADS) {
+    const next = downloadQueue.shift();
+    if (next) {
+      clearTimeout(next.timer);
+      activeDownloads++;
+      next.resolve(true);
+    }
+  }
 }
 
 /**
@@ -463,10 +524,11 @@ export async function executeDownload(
     abortSignal,
   } = options;
 
-  if (!acquireDownloadSlot()) {
+  const acquired = await acquireDownloadSlot(15000, abortSignal);
+  if (!acquired) {
     throw new DownloadError(
       "DOWNLOAD_RATE_LIMITED",
-      "Server is currently processing maximum concurrent downloads. Please try again shortly."
+      "Server is currently processing maximum concurrent downloads. Please try again in a few moments."
     );
   }
 
@@ -487,6 +549,8 @@ export async function executeDownload(
       "--no-part",
       "--js-runtimes",
       "node",
+      "--sleep-requests",
+      process.env.YT_DLP_SLEEP_REQUESTS || "1.5",
     ];
 
     const proxy = getProxyUrl();
@@ -684,6 +748,23 @@ export async function executeDownload(
         throw new DownloadError(
           "DOWNLOAD_UNAVAILABLE",
           `The requested ${type} quality or format is not available for this video.`
+        );
+      }
+
+      // Detect YouTube 429 Too Many Requests / Rate limiting
+      if (
+        lower.includes("429") ||
+        lower.includes("too many requests") ||
+        lower.includes("rate-limit") ||
+        lower.includes("rate limit") ||
+        lower.includes("try again later")
+      ) {
+        console.error(
+          `[YouTube 429 Rate-Limit Detected] Exit code: ${runResult.code}. Technical details: ${runResult.outputBuffer.slice(-500)}`
+        );
+        throw new DownloadError(
+          "DOWNLOAD_RATE_LIMITED",
+          "This video is temporarily unavailable due to high demand on YouTube. Please try again in a few minutes."
         );
       }
 

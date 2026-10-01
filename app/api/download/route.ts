@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { Readable } from "node:stream";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { createErrorResponse } from "@/lib/errors";
-import { checkRateLimit } from "@/lib/ratelimit";
+import { checkRateLimit, getClientIp } from "@/lib/ratelimit";
 import { parseMediaUrl, parseYouTubeVideoId } from "@/lib/youtube";
 import {
   DownloadType,
@@ -20,19 +20,7 @@ import {
 } from "@/lib/download";
 
 export const runtime = "nodejs";
-export const maxDuration = 60; // Vercel execution limit
-
-function getClientIp(req: NextRequest): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
-  }
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp) {
-    return realIp.trim();
-  }
-  return "127.0.0.1";
-}
+export const maxDuration = 60; // Execution limit
 
 export async function OPTIONS(req: NextRequest) {
   return handleCorsPreflight(req);
@@ -42,13 +30,14 @@ export async function POST(req: NextRequest) {
   const corsHeaders = getCorsHeaders(req);
   const ip = getClientIp(req);
 
-  // 1. Strict rate limiting: 5 requests per IP per 10 minutes
+  // 1. Rate limiting (20 downloads per IP per 15 minutes by default)
   const rateLimit = await checkRateLimit(ip, "download");
   if (!rateLimit.allowed) {
+    console.warn(`[PullMeta RateLimit] Client IP ${ip} hit download rate limit.`);
     const retryAfter = Math.ceil(rateLimit.resetInMs / 1000).toString();
     return createErrorResponse(
       "DOWNLOAD_RATE_LIMITED",
-      "Rate limit exceeded. Please wait a few minutes before downloading again.",
+      "Rate limit reached. Please wait a few minutes before downloading again.",
       {
         ...corsHeaders,
         "Retry-After": retryAfter,

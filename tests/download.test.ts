@@ -355,7 +355,7 @@ describe("POST /api/download Route Handler", () => {
     expect(data.error).not.toHaveProperty("stack");
   });
 
-  it("enforces rate limit of 5 requests per 10 minutes", async () => {
+  it("enforces rate limit of 20 requests per 15 minutes", async () => {
     vi.spyOn(downloadModule, "executeDownload").mockResolvedValue({
       filePath: dummyFilePath,
       tempDir: dummyTempDir,
@@ -364,8 +364,8 @@ describe("POST /api/download Route Handler", () => {
       contentType: "video/mp4",
     });
 
-    // Make 5 requests from the same IP (192.168.1.100)
-    for (let i = 0; i < 5; i++) {
+    // Make 20 requests from the same IP (192.168.1.100)
+    for (let i = 0; i < 20; i++) {
       const req = new NextRequest("http://localhost:4000/api/download", {
         method: "POST",
         headers: { "x-forwarded-for": "192.168.1.100" },
@@ -375,7 +375,7 @@ describe("POST /api/download Route Handler", () => {
       expect(res.status).toBe(200);
     }
 
-    // 6th request should be rate limited (429)
+    // 21st request should be rate limited (429)
     const blockedReq = new NextRequest("http://localhost:4000/api/download", {
       method: "POST",
       headers: { "x-forwarded-for": "192.168.1.100" },
@@ -387,6 +387,23 @@ describe("POST /api/download Route Handler", () => {
     const blockedData = await blockedRes.json();
     expect(blockedData.error.code).toBe("DOWNLOAD_RATE_LIMITED");
     expect(blockedRes.headers.get("Retry-After")).toBeDefined();
+  });
+
+  it("catches YouTube 429 error and returns friendly user message without leaking internals", async () => {
+    vi.spyOn(downloadModule, "executeDownload").mockRejectedValueOnce(
+      new DownloadError("DOWNLOAD_RATE_LIMITED", "This video is temporarily unavailable due to high demand on YouTube. Please try again in a few minutes.")
+    );
+
+    const req = new NextRequest("http://localhost:4000/api/download", {
+      method: "POST",
+      body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(429);
+    const data = await res.json();
+    expect(data.error.code).toBe("DOWNLOAD_RATE_LIMITED");
+    expect(data.error.message).toContain("high demand on YouTube");
   });
 
   describe("Cookie and Proxy Security & Management", () => {

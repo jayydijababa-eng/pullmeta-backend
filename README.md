@@ -134,6 +134,18 @@ To bypass YouTube's datacenter bot protection reliably on cloud servers, provide
   2. PullMeta automatically sets `YOUTUBE_PLAYER_CLIENT=visionos,android,mweb` and `--js-runtimes node`, which avoids web challenges by default.
   3. If cloud hosting IP ranges become aggressively blacklisted, configure `PROXY_URL` with a residential proxy provider.
 
+### "Rate limit exceeded" Error
+- **Cause & Diagnosis:**
+  1. **Application Rate Limiter:** The backend limits requests per client IP. Behind reverse proxies (like Railway, Cloudflare, or Vercel), if `X-Forwarded-For` or `CF-Connecting-IP` is misread or requests default to `127.0.0.1`, all visitors share the same rate-limit bucket.
+  2. **YouTube 429 Too Many Requests:** When too many concurrent or rapid extraction/download calls originate from the same cloud IP address, YouTube responds with HTTP 429 / "Too Many Requests".
+- **Resolution & Protections:**
+  1. **Proxy-Aware Real Client IP Extraction:** The backend inspects `CF-Connecting-IP`, `X-Real-IP`, `True-Client-IP`, `X-Client-IP`, and filters internal hops from `X-Forwarded-For` to isolate genuine client IPs.
+  2. **Sensible Default Limits:** Default limits are set to **20 downloads per IP per 15 minutes** (customizable via `RATE_LIMIT_DOWNLOAD_MAX`) and **30 extract requests per 15 minutes** (`RATE_LIMIT_EXTRACT_MAX`).
+  3. **Concurrent Job Queue:** Limits concurrent `yt-dlp` jobs to **2-3** (via `MAX_CONCURRENT_DOWNLOADS=3`). Excess requests wait safely in an asynchronous FIFO queue instead of immediately failing.
+  4. **Video Info Caching:** Video metadata and format probing results are cached in-memory for 10 minutes (`DEFAULT_TTL_MS = 10 * 60 * 1000`). Repeated extractions/downloads for the same video are served instantly without spawning `yt-dlp`.
+  5. **Request Spacing (`--sleep-requests`):** Sub-requests are spaced with `--sleep-requests 1.5` so YouTube endpoints are not hammered in sub-seconds.
+  6. **Residential Proxy:** If cloud hosting IPs are persistently rate-limited by YouTube, configure `PROXY_URL` with a residential proxy provider.
+
 ### Cookies Expiring
 - Google cookie sessions typically remain valid for several weeks or months unless logged out.
 - If downloads begin failing with temporary unavailability errors, re-export fresh cookies from your burner account following the steps above and update the `YOUTUBE_COOKIES` variable in Railway.
