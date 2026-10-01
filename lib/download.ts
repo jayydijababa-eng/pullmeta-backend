@@ -328,14 +328,19 @@ export async function executeDownload(
     const outputTemplate = path.join(tempDir, "media.%(ext)s");
     const maxFilesizeMb = Math.max(1, Math.floor(maxSizeBytes / (1024 * 1024)));
 
+    const isInstagram = options.platform === "instagram" || (options.url && options.url.includes("instagram.com"));
+
     const args: string[] = [
       "--no-playlist",
       "--no-warnings",
       "--no-progress",
       "--no-part",
-      "--extractor-args",
-      "youtube:player_client=visionos,android",
     ];
+
+    if (!isInstagram) {
+      const ytClients = process.env.YOUTUBE_PLAYER_CLIENT || "android,ios,mweb,web_safari";
+      args.push("--extractor-args", `youtube:player_client=${ytClients}`);
+    }
 
     if (process.env.YOUTUBE_PROXY) {
       args.push("--proxy", process.env.YOUTUBE_PROXY);
@@ -343,7 +348,6 @@ export async function executeDownload(
       args.push("--proxy", (process.env.HTTPS_PROXY || process.env.HTTP_PROXY)!);
     }
 
-    const isInstagram = options.platform === "instagram" || (options.url && options.url.includes("instagram.com"));
     const cookieEnv = isInstagram
       ? (process.env.INSTAGRAM_COOKIES || process.env.COOKIES)
       : (process.env.YOUTUBE_COOKIES || process.env.COOKIES);
@@ -524,7 +528,7 @@ export async function executeDownload(
             return reject(
               new DownloadError(
                 "DOWNLOAD_UNAVAILABLE",
-                "YouTube has applied a bot/sign-in check on this cloud server for this video. Try selecting 360p or Audio, or a different video."
+                "YouTube has applied a bot/sign-in check on this cloud server for this video. To bypass this permanently, configure YOUTUBE_COOKIES in your Railway deployment, or try selecting 720p / Audio Only."
               )
             );
           }

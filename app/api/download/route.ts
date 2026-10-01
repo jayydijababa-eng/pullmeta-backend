@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
     const retryAfter = Math.ceil(rateLimit.resetInMs / 1000).toString();
     return createErrorResponse(
       "DOWNLOAD_RATE_LIMITED",
-      "Rate limit exceeded. Maximum 5 download requests per 10 minutes.",
+      "Rate limit exceeded. Please wait a few minutes before downloading again.",
       {
         ...corsHeaders,
         "Retry-After": retryAfter,

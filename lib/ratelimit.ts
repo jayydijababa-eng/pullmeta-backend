@@ -11,7 +11,12 @@ export interface RateLimitResult {
 const LIMITS: Record<RateLimitAction, { max: number; windowMs: number }> = {
   extract: { max: 20, windowMs: 10 * 60 * 1000 }, // 20 per 10 min
   thumbnail: { max: 60, windowMs: 10 * 60 * 1000 }, // 60 per 10 min
-  download: { max: 5, windowMs: 10 * 60 * 1000 }, // 5 per 10 min
+  download: {
+    max: process.env.RATE_LIMIT_DOWNLOAD_MAX
+      ? parseInt(process.env.RATE_LIMIT_DOWNLOAD_MAX, 10)
+      : 5,
+    windowMs: 10 * 60 * 1000,
+  }, // 5 per 10 min default
 };
 
 // In-memory sliding log storage
