@@ -140,9 +140,10 @@ export function getClientIp(req: NextRequest): string {
     }
   }
 
-  // 6. Next.js internal req.ip
-  if (req.ip) {
-    const cleaned = cleanIp(req.ip);
+  // 6. Next.js internal / socket ip
+  const socketIp = (req as unknown as { ip?: string }).ip;
+  if (socketIp) {
+    const cleaned = cleanIp(socketIp);
     if (isValidIp(cleaned)) return cleaned;
   }
 

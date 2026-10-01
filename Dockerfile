@@ -20,26 +20,28 @@ RUN curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -
 USER node
 ENV HOME=/home/node \
     PATH=/home/node/.local/bin:$PATH \
-    NODE_ENV=production \
     PORT=10000 \
     HOSTNAME=0.0.0.0 \
     MAX_FILE_SIZE_BYTES=5368709120 \
     DOWNLOAD_TIMEOUT_MS=600000 \
-    MAX_CONCURRENT_DOWNLOADS=5
+    MAX_CONCURRENT_DOWNLOADS=3
 
 WORKDIR /home/node/app
 
 # Copy dependency manifests
 COPY --chown=node:node package*.json ./
 
-# Install production dependencies
-RUN npm ci || npm install
+# Install all dependencies including TypeScript and type declarations needed for build
+RUN npm ci --include=dev || npm install --include=dev
 
 # Copy application source code
 COPY --chown=node:node . .
 
 # Build Next.js application
 RUN npm run build
+
+# Set production environment for runtime
+ENV NODE_ENV=production
 
 # Expose standard ports (Render defaults to 10000, Hugging Face to 7860)
 EXPOSE 10000 7860

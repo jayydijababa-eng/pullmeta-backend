@@ -284,10 +284,10 @@ export function formatCookiesForYtDlp(raw: string, defaultDomain = ".youtube.com
 
   // Check if content points to an existing file on disk
   try {
-    if (fs.existsSync(content)) {
-      const stats = fs.statSync(content);
+    if (fs.existsSync(/*turbopackIgnore: true*/ content)) {
+      const stats = fs.statSync(/*turbopackIgnore: true*/ content);
       if (stats.isFile()) {
-        content = fs.readFileSync(content, "utf-8").trim();
+        content = fs.readFileSync(/*turbopackIgnore: true*/ content, "utf-8").trim();
       }
     }
   } catch {
@@ -413,10 +413,10 @@ export function resolveCookieContent(): string | null {
 
   for (const p of candidatePaths) {
     try {
-      if (fs.existsSync(p)) {
-        const stats = fs.statSync(p);
+      if (fs.existsSync(/*turbopackIgnore: true*/ p)) {
+        const stats = fs.statSync(/*turbopackIgnore: true*/ p);
         if (stats.isFile()) {
-          const fileContent = fs.readFileSync(p, "utf-8").trim();
+          const fileContent = fs.readFileSync(/*turbopackIgnore: true*/ p, "utf-8").trim();
           if (fileContent) {
             const formatted = formatCookiesForYtDlp(fileContent, ".youtube.com");
             if (formatted) return formatted;
