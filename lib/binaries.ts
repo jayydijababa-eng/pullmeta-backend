@@ -41,7 +41,17 @@ export async function getYtDlpPath(): Promise<string> {
     return cachedYtDlpPath;
   }
 
-  // 3. System PATH
+  // 3. Common Linux paths (Docker / Render / Railway)
+  if (process.platform !== "win32") {
+    for (const linuxPath of ["/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp"]) {
+      if (fs.existsSync(/*turbopackIgnore: true*/ linuxPath)) {
+        cachedYtDlpPath = linuxPath;
+        return cachedYtDlpPath;
+      }
+    }
+  }
+
+  // 4. System PATH
   try {
     const probe = spawnSync(binName, ["--version"], { timeout: 3000, windowsHide: true });
     if (probe.status === 0) {
@@ -120,7 +130,17 @@ export async function getFfmpegPath(): Promise<string | null> {
     return cachedFfmpegPath;
   }
 
-  // 3. System PATH
+  // 3. Common Linux paths (Docker / Render / Railway)
+  if (process.platform !== "win32") {
+    for (const linuxPath of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]) {
+      if (fs.existsSync(/*turbopackIgnore: true*/ linuxPath)) {
+        cachedFfmpegPath = linuxPath;
+        return cachedFfmpegPath;
+      }
+    }
+  }
+
+  // 4. System PATH
   try {
     const probe = spawnSync(binName, ["-version"], { timeout: 3000, windowsHide: true });
     if (probe.status === 0) {

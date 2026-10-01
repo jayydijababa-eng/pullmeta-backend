@@ -111,7 +111,7 @@ export function getVideoFormatSelector(
   // "best" or default: select the absolute highest resolution video + best audio
   if (hasFfmpeg) {
     return {
-      requiresFfmpeg: false,
+      requiresFfmpeg: true,
       selector: `bestvideo[vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best[vcodec!=none][acodec!=none]/best[vcodec!=none]/best`,
     };
   }
@@ -362,7 +362,7 @@ export async function executeDownload(
       defaultContentType = "video/mp4";
     }
 
-    if (ffmpegPath) {
+    if (ffmpegPath && (ffmpegPath.includes("/") || ffmpegPath.includes("\\"))) {
       args.push("--ffmpeg-location", ffmpegPath);
     }
 

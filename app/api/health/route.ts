@@ -10,7 +10,7 @@ export async function OPTIONS(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const corsHeaders = getCorsHeaders(req);
   return NextResponse.json(
-    { ok: true },
+    { ok: true, version: "2.1.0", extractor: "visionos,android" },
     {
       status: 200,
       headers: {
