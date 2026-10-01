@@ -99,25 +99,25 @@ export function getVideoFormatSelector(
     if (hasFfmpeg) {
       return {
         requiresFfmpeg: true,
-        selector: `bestvideo[height<=${targetHeight}][ext=mp4][vcodec!=none]+bestaudio[ext=m4a][acodec!=none]/bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]`,
+        selector: `bestvideo[height<=${targetHeight}][vcodec!=none]+bestaudio[acodec!=none]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]`,
       };
     }
     return {
       requiresFfmpeg: false,
-      selector: `best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]`,
+      selector: `best[height<=${targetHeight}][vcodec!=none][acodec!=none]/best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]`,
     };
   }
 
-  // "best" or default
+  // "best" or default: select the absolute highest resolution video + best audio
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: false,
-      selector: `bestvideo[ext=mp4][vcodec!=none]+bestaudio[ext=m4a][acodec!=none]/bestvideo[vcodec!=none]+bestaudio[acodec!=none]/best[vcodec!=none][acodec!=none]/best[vcodec!=none]`,
+      selector: `bestvideo[vcodec!=none]+bestaudio[acodec!=none]/bestvideo+bestaudio/best[vcodec!=none][acodec!=none]/best[vcodec!=none]/best`,
     };
   }
   return {
     requiresFfmpeg: false,
-    selector: `best[vcodec!=none][acodec!=none]/best[vcodec!=none]`,
+    selector: `best[vcodec!=none][acodec!=none]/best[vcodec!=none]/best`,
   };
 }
 
@@ -319,7 +319,7 @@ export async function executeDownload(
       "--no-progress",
       "--no-part",
       "--extractor-args",
-      "youtube:player_client=ios,android,web",
+      "youtube:player_client=default,visionos,web",
     ];
 
     if (process.env.YOUTUBE_PROXY) {
