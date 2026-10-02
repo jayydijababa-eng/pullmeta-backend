@@ -253,8 +253,8 @@ export async function transcodeToH264Aac(
 export function getVideoFormatSelector(
   quality: string,
   hasFfmpeg: boolean
-): { selector: string; requiresFfmpeg: boolean } {
-  const heightMap: Record<string, number> = {
+): { selector: string; formatSort: string; requiresFfmpeg: boolean; targetRes: number } {
+  const resMap: Record<string, number> = {
     "2160p": 2160,
     "1440p": 1440,
     "1080p": 1080,
@@ -266,23 +266,31 @@ export function getVideoFormatSelector(
   };
 
   const normQuality = (quality || "1080p").toLowerCase();
-  const targetHeight = heightMap[normQuality] || (normQuality === "best" ? 1080 : 1080);
+  const targetRes = resMap[normQuality] || (normQuality === "best" ? 1080 : 1080);
+  const formatSort =
+    normQuality === "best"
+      ? "vcodec:h264,res,acodec:m4a"
+      : `res:${targetRes},vcodec:h264,acodec:m4a`;
 
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: true,
-      // Priority:
-      // 1. Native AVC1 (H.264) video <= targetHeight + native mp4a (AAC) audio
-      // 2. Single pre-merged stream with AVC1 <= targetHeight
-      // 3. Native AVC1 video + any best audio
-      // 4. Fallback to best available video <= targetHeight + audio (transcode fallback converts AV1/VP9 to H.264+AAC)
-      // 5. Ultimate fallback if target height missing (strictly requiring video)
-      selector: `bv*[vcodec^=avc1][height<=?${targetHeight}]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=?${targetHeight}][vcodec!=none]/bv*[vcodec^=avc1][height<=?${targetHeight}]+ba/bv*[height<=?${targetHeight}]+ba/b[height<=?${targetHeight}][vcodec!=none]/bv*+ba/b[vcodec!=none]`,
+      targetRes,
+      formatSort,
+      // Universal video + audio selector.
+      // Format sorting (-S) handles prioritization:
+      // 1. Closest resolution <= targetRes (evaluated via min(width, height) by yt-dlp res)
+      // 2. H.264 (avc1) video codec
+      // 3. AAC (m4a) audio codec
+      // If H.264 is unavailable at targetRes (e.g. 4K VP9), best video stream is downloaded and converted via transcode fallback
+      selector: "bv*+ba/b[vcodec!=none]",
     };
   }
   return {
     requiresFfmpeg: false,
-    selector: `b[vcodec^=avc1][height<=?${targetHeight}][vcodec!=none]/b[height<=?${targetHeight}][vcodec!=none]/b[vcodec!=none]`,
+    targetRes,
+    formatSort,
+    selector: "b[vcodec!=none]/b",
   };
 }
 
@@ -692,10 +700,8 @@ export async function executeDownload(
         runArgs.push("--extractor-args", `youtube:player_client=${playerClient}`);
       }
 
-      // Enforce format sorting so H.264/avc1 video and AAC/m4a audio are always prioritized first
-      runArgs.push("-S", "vcodec:h264,res,acodec:m4a");
-
       if (type === "audio") {
+        runArgs.push("-S", "acodec:m4a,abr");
         const audioConfig = getAudioFormatConfig(format, audioQuality, !!ffmpegPath);
         runArgs.push(...audioConfig.args);
         expectedExt = audioConfig.ext;
@@ -708,6 +714,8 @@ export async function executeDownload(
             `Quality ${quality} requires video and audio stream merging with FFmpeg, which is not available in this environment.`
           );
         }
+        // Enforce resolution-based format sorting prioritizing H.264 video and AAC audio
+        runArgs.push("-S", formatInfo.formatSort);
         runArgs.push("-f", formatInfo.selector);
         if (ffmpegPath) {
           runArgs.push("--merge-output-format", "mp4");
@@ -1001,8 +1009,25 @@ export async function executeDownload(
       );
     }
 
-    // Verify downloaded media with ffprobe (height, codecs, audio stream presence)
-    let verification = await verifyDownloadedMedia(mediaFilePath, type, quality);
+    // Read metadata title and available formats from info.json written by yt-dlp
+    let videoTitle = "";
+    let availableFormats: any[] = [];
+    try {
+      const infoJsonPath = path.join(tempDir, "media.info.json");
+      if (fs.existsSync(infoJsonPath)) {
+        const rawJson = await fs.promises.readFile(infoJsonPath, "utf-8");
+        const parsed = JSON.parse(rawJson);
+        videoTitle = parsed.title || "";
+        if (Array.isArray(parsed.formats)) {
+          availableFormats = parsed.formats;
+        }
+      }
+    } catch {
+      // Ignore metadata parsing error
+    }
+
+    // Verify downloaded media with ffprobe (resolution, codecs, audio stream presence)
+    let verification = await verifyDownloadedMedia(mediaFilePath, type, quality, availableFormats);
     if (!verification.valid) {
       if (runResult.outputBuffer.toLowerCase().includes("larger than max-filesize")) {
         throw new DownloadError(
@@ -1051,7 +1076,7 @@ export async function executeDownload(
         finalFileSize = transcodedStat.size;
 
         // Re-verify the transcoded file with ffprobe
-        const postVerification = await verifyDownloadedMedia(finalFilePath, "video", quality);
+        const postVerification = await verifyDownloadedMedia(finalFilePath, "video", quality, availableFormats);
         const postVCodec = (postVerification.videoCodec || "").toLowerCase();
         const postACodec = (postVerification.audioCodec || "").toLowerCase();
 
@@ -1067,19 +1092,6 @@ export async function executeDownload(
         }
         verification = postVerification;
       }
-    }
-
-    // Read metadata title if written
-    let videoTitle = "";
-    try {
-      const infoJsonPath = path.join(tempDir, "media.info.json");
-      if (fs.existsSync(infoJsonPath)) {
-        const rawJson = await fs.promises.readFile(infoJsonPath, "utf-8");
-        const parsed = JSON.parse(rawJson);
-        videoTitle = parsed.title || "";
-      }
-    } catch {
-      // Ignore metadata parsing error
     }
 
     const ext =
@@ -1136,7 +1148,8 @@ export interface MediaVerification {
 export async function verifyDownloadedMedia(
   filePath: string,
   type: "video" | "audio",
-  expectedQuality?: string
+  expectedQuality?: string,
+  availableFormats?: any[]
 ): Promise<MediaVerification> {
   const ffprobePath = await getFfprobePath();
   if (!ffprobePath) {
@@ -1193,9 +1206,12 @@ export async function verifyDownloadedMedia(
           }
 
           if (!audioStream) {
+            const h = videoStream.height || 0;
+            const w = videoStream.width || 0;
+            const dim = Math.min(w, h) > 0 ? Math.min(w, h) : (h || w);
             return resolve({
               valid: false,
-              actualHeight: videoStream.height || null,
+              actualHeight: dim || null,
               videoCodec: videoStream.codec_name,
               hasAudio: false,
               audioCodec: null,
@@ -1205,9 +1221,11 @@ export async function verifyDownloadedMedia(
 
           const h = videoStream.height || 0;
           const w = videoStream.width || 0;
-          const resolutionDim = Math.min(w, h) > 0 ? Math.min(w, h) : h;
+          // Resolution is defined as the shorter side: res = min(width, height)
+          // 1080x1920 Short is 1080p. 1920x1080 video is also 1080p.
+          const resolutionDim = Math.min(w, h) > 0 ? Math.min(w, h) : (h || w);
 
-          const heightMap: Record<string, number> = {
+          const resMap: Record<string, number> = {
             "2160p": 2160,
             "1440p": 1440,
             "1080p": 1080,
@@ -1217,20 +1235,72 @@ export async function verifyDownloadedMedia(
             "240p": 240,
             "144p": 144,
           };
-          const target = expectedQuality ? heightMap[expectedQuality.toLowerCase()] : undefined;
+          const target = expectedQuality ? resMap[expectedQuality.toLowerCase()] : undefined;
 
-          if (target && target >= 720 && resolutionDim < 720 && resolutionDim < target * 0.7) {
-            console.warn(
-              `[PullMeta Quality Mismatch] Requested ${expectedQuality} (${target}p) but ffprobe measured ${resolutionDim}p (${w}x${h}, codec: ${videoStream.codec_name})`
-            );
-            return resolve({
-              valid: false,
-              actualHeight: resolutionDim,
-              videoCodec: videoStream.codec_name,
-              hasAudio: true,
-              audioCodec: audioStream.codec_name,
-              error: `Resolution mismatch: Requested ${expectedQuality}, but actual video resolution is ${resolutionDim}p (${w}x${h}). YouTube restricted the high-definition stream for this video.`,
-            });
+          // Check if resolution matches requested quality within tolerance
+          const tolerance = 20;
+          if (target) {
+            const meetsTarget = resolutionDim >= target - tolerance;
+
+            if (!meetsTarget) {
+              // Inspect available formats to see if a higher stream truly exists
+              let maxAvailableVideoRes = 0;
+              let maxAvailableH264Res = 0;
+
+              if (Array.isArray(availableFormats) && availableFormats.length > 0) {
+                const videoFormats = availableFormats.filter(
+                  (f) => f && f.vcodec && f.vcodec !== "none"
+                );
+                for (const f of videoFormats) {
+                  const fw = f.width || 0;
+                  const fh = f.height || 0;
+                  const fDim = Math.min(fw, fh) > 0 ? Math.min(fw, fh) : (fh || fw);
+                  if (fDim > maxAvailableVideoRes) {
+                    maxAvailableVideoRes = fDim;
+                  }
+                  const vc = (f.vcodec || "").toLowerCase();
+                  if ((vc.startsWith("avc1") || vc.startsWith("h264")) && fDim > maxAvailableH264Res) {
+                    maxAvailableH264Res = fDim;
+                  }
+                }
+              }
+
+              // Accept lower resolution only if a higher stream truly does not exist for this video
+              if (maxAvailableVideoRes > 0 && maxAvailableVideoRes < target - tolerance) {
+                // Video was only uploaded/available up to a lower resolution; accepted
+                return resolve({
+                  valid: true,
+                  actualHeight: resolutionDim,
+                  videoCodec: videoStream.codec_name,
+                  hasAudio: true,
+                  audioCodec: audioStream.codec_name,
+                });
+              }
+
+              // If a higher stream existed but actual is lower:
+              // Only claim YouTube restricted if yt-dlp truly shows no higher H.264 stream
+              const restrictedByYouTube =
+                maxAvailableVideoRes >= target - tolerance &&
+                maxAvailableH264Res > 0 &&
+                maxAvailableH264Res < target - tolerance;
+
+              const restrictionMsg = restrictedByYouTube
+                ? " YouTube restricted the high-definition stream for this video."
+                : "";
+
+              console.warn(
+                `[PullMeta Quality Mismatch] Requested ${expectedQuality} (${target}p) but ffprobe measured ${resolutionDim}p (${w}x${h}, codec: ${videoStream.codec_name}).${restrictionMsg}`
+              );
+
+              return resolve({
+                valid: false,
+                actualHeight: resolutionDim,
+                videoCodec: videoStream.codec_name,
+                hasAudio: true,
+                audioCodec: audioStream.codec_name,
+                error: `Resolution mismatch: Requested ${expectedQuality}, but actual video resolution is ${resolutionDim}p (${w}x${h}).${restrictionMsg}`,
+              });
+            }
           }
 
           return resolve({

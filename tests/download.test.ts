@@ -107,24 +107,24 @@ describe("Download Service Unit Tests", () => {
   });
 
   describe("getFormatSelector", () => {
-    it("requires FFmpeg for 1080p, 1440p, and 2160p", () => {
+    it("requires FFmpeg for 1080p, 1440p, and 2160p and sorts by resolution", () => {
       const q1080 = getFormatSelector("1080p", true);
       expect(q1080.requiresFfmpeg).toBe(true);
-      expect(q1080.selector).toContain("1080");
+      expect(q1080.formatSort).toContain("res:1080");
 
       const q1440 = getFormatSelector("1440p", true);
       expect(q1440.requiresFfmpeg).toBe(true);
-      expect(q1440.selector).toContain("1440");
+      expect(q1440.formatSort).toContain("res:1440");
 
       const q2160 = getFormatSelector("2160p", true);
       expect(q2160.requiresFfmpeg).toBe(true);
-      expect(q2160.selector).toContain("2160");
+      expect(q2160.formatSort).toContain("res:2160");
     });
 
     it("does not require FFmpeg for 720p and best without ffmpeg", () => {
       const q720Without = getFormatSelector("720p", false);
       expect(q720Without.requiresFfmpeg).toBe(false);
-      expect(q720Without.selector).toContain("720");
+      expect(q720Without.formatSort).toContain("res:720");
 
       const qBestWithout = getFormatSelector("best", false);
       expect(qBestWithout.requiresFfmpeg).toBe(false);
