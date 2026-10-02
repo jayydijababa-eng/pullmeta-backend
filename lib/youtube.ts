@@ -252,70 +252,89 @@ export async function probeVideoFormats(
     }
 
     const ytClients = process.env.YOUTUBE_PLAYER_CLIENT || "visionos,android,mweb";
-    const args = [
-      "--dump-json",
-      "--no-playlist",
-      "--skip-download",
-      "--js-runtimes",
-      "node",
-      "--sleep-requests",
-      process.env.YT_DLP_SLEEP_REQUESTS || "1.5",
-      "--extractor-args",
-      `youtube:player_client=${ytClients}`,
-      `https://www.youtube.com/watch?v=${videoId}`,
-    ];
-
     const proxy = getProxyUrl();
-    if (proxy) {
-      args.push("--proxy", proxy);
-    }
-
     const { cookiePath, cleanup } = await createRequestCookieFile();
     cleanupCookie = cleanup;
-    if (cookiePath) {
-      args.push("--cookies", cookiePath);
-    }
 
-    const rawJson = await new Promise<string>((resolve, reject) => {
-      const child = spawn(ytDlpPath, args, { windowsHide: true });
-      let stdout = "";
-      let stderr = "";
+    const buildProbeArgs = (useCookies = true, client?: string): string[] => {
+      const runArgs: string[] = [
+        "--dump-json",
+        "--no-playlist",
+        "--skip-download",
+        "--js-runtimes",
+        "node",
+      ];
+      if (proxy) {
+        runArgs.push("--proxy", proxy);
+      }
+      if (useCookies && cookiePath) {
+        runArgs.push("--cookies", cookiePath);
+      }
+      if (client) {
+        runArgs.push("--extractor-args", `youtube:player_client=${client}`);
+      }
+      runArgs.push(`https://www.youtube.com/watch?v=${videoId}`);
+      return runArgs;
+    };
 
-      const timer = setTimeout(() => {
+    const runProbeProcess = (argsToRun: string[]): Promise<string> => {
+      return new Promise<string>((resolve, reject) => {
+        const child = spawn(ytDlpPath, argsToRun, { windowsHide: true });
+        let stdout = "";
+        let stderr = "";
+
+        const timer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+          reject(new Error("Format probe timed out"));
+        }, 15000);
+
+        child.stdout?.on("data", (chunk: Buffer) => {
+          if (stdout.length < 5000000) {
+            stdout += chunk.toString("utf-8");
+          }
+        });
+
+        child.stderr?.on("data", (chunk: Buffer) => {
+          if (stderr.length < 5000) {
+            stderr += chunk.toString("utf-8");
+          }
+        });
+
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          if (code === 0 && stdout) {
+            resolve(stdout);
+          } else {
+            reject(new Error(stderr || `yt-dlp exited with code ${code}`));
+          }
+        });
+
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+    };
+
+    let rawJson: string;
+    try {
+      rawJson = await runProbeProcess(buildProbeArgs(true, ytClients));
+    } catch (primaryErr) {
+      if (cookiePath) {
+        // Fallback without cookies
         try {
-          child.kill("SIGKILL");
+          rawJson = await runProbeProcess(buildProbeArgs(false, undefined));
         } catch {
-          // ignore
+          throw primaryErr;
         }
-        reject(new Error("Format probe timed out"));
-      }, 7000);
-
-      child.stdout?.on("data", (chunk: Buffer) => {
-        if (stdout.length < 200000) {
-          stdout += chunk.toString("utf-8");
-        }
-      });
-
-      child.stderr?.on("data", (chunk: Buffer) => {
-        if (stderr.length < 5000) {
-          stderr += chunk.toString("utf-8");
-        }
-      });
-
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (code === 0 && stdout) {
-          resolve(stdout);
-        } else {
-          reject(new Error(stderr || `yt-dlp exited with code ${code}`));
-        }
-      });
-
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    });
+      } else {
+        throw primaryErr;
+      }
+    }
 
     const parsed = JSON.parse(rawJson);
     const formats: any[] = Array.isArray(parsed.formats) ? parsed.formats : [];

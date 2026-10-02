@@ -167,12 +167,12 @@ export function getVideoFormatSelector(
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: true,
-      selector: `bestvideo[height<=${targetHeight}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]`,
+      selector: `bestvideo[height<=${targetHeight}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`,
     };
   }
   return {
     requiresFfmpeg: false,
-    selector: `best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]`,
+    selector: `best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
   };
 }
 
@@ -239,7 +239,7 @@ export function getAudioFormatConfig(
         return {
           args: [
             "-f",
-            "ba",
+            "ba[ext=m4a]/ba/best",
             "-x",
             "--audio-format",
             "mp3",
@@ -559,21 +559,28 @@ export async function executeDownload(
     }
 
     const { cookiePath, cleanup: cleanupCookie } = await createRequestCookieFile();
-    if (cookiePath) {
-      baseArgs.push("--cookies", cookiePath);
-    }
 
     let expectedExt = "mp4";
     let defaultContentType = "video/mp4";
 
     const targetUrl = options.url || `https://www.youtube.com/watch?v=${videoId}`;
 
-    const buildYtDlpArgs = (playerClient: string): string[] => {
+    const buildYtDlpArgs = (playerClient?: string, useCookies = true): string[] => {
       const runArgs: string[] = [
         ...baseArgs,
-        "--extractor-args",
-        `youtube:player_client=${playerClient}`,
       ];
+
+      if (proxy) {
+        runArgs.push("--proxy", proxy);
+      }
+
+      if (useCookies && cookiePath) {
+        runArgs.push("--cookies", cookiePath);
+      }
+
+      if (playerClient) {
+        runArgs.push("--extractor-args", `youtube:player_client=${playerClient}`);
+      }
 
       if (type === "audio") {
         const audioConfig = getAudioFormatConfig(format, audioQuality, !!ffmpegPath);
@@ -692,20 +699,28 @@ export async function executeDownload(
     let runResult: { code: number | null; outputBuffer: string; timedOut: boolean; aborted: boolean };
     try {
       const primaryClient = process.env.YOUTUBE_PLAYER_CLIENT || "visionos,android,mweb";
-      runResult = await runYtDlpProcess(buildYtDlpArgs(primaryClient));
+      runResult = await runYtDlpProcess(buildYtDlpArgs(primaryClient, true));
 
-      // If initial attempt failed specifically due to a bot/sign-in check and no custom client was forced,
-      // automatically retry once with alternative mobile/fallback client
+      // Fallback 1: If failed with cookies, retry without cookies
+      if (
+        runResult.code !== 0 &&
+        !runResult.timedOut &&
+        !runResult.aborted &&
+        cookiePath
+      ) {
+        console.warn(`[PullMeta Download] Attempt with cookies failed (exit ${runResult.code}). Retrying without cookies...`);
+        runResult = await runYtDlpProcess(buildYtDlpArgs(primaryClient, false));
+      }
+
+      // Fallback 2: If failed with custom/mobile clients, retry with default web client
       if (
         runResult.code !== 0 &&
         !runResult.timedOut &&
         !runResult.aborted &&
         !process.env.YOUTUBE_PLAYER_CLIENT
       ) {
-        const lower = runResult.outputBuffer.toLowerCase();
-        if (lower.includes("sign in to confirm") || lower.includes("bot")) {
-          runResult = await runYtDlpProcess(buildYtDlpArgs("android,mweb"));
-        }
+        console.warn(`[PullMeta Download] Attempt with mobile clients failed. Retrying with default client...`);
+        runResult = await runYtDlpProcess(buildYtDlpArgs(undefined, false));
       }
     } finally {
       await cleanupCookie().catch(() => {});
@@ -745,6 +760,9 @@ export async function executeDownload(
         lower.includes("format not available") ||
         lower.includes("no video formats found")
       ) {
+        console.error(
+          `[PullMeta Download Unavailable] Exit code: ${runResult.code}. Technical details: ${runResult.outputBuffer.slice(-1000)}`
+        );
         throw new DownloadError(
           "DOWNLOAD_UNAVAILABLE",
           `The requested ${type} quality or format is not available for this video.`
