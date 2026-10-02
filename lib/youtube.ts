@@ -350,8 +350,8 @@ export async function probeVideoFormats(
       audioSize = Math.round((bestAudio.tbr * 1000 / 8) * duration);
     }
 
-    // 2. Map standard video resolutions
-    const standardHeights = [2160, 1440, 1080, 720, 480, 360, 240, 144];
+    // 2. Map standard video resolutions (capped at 1080p for reliable universal H.264 playback without heavy CPU transcoding)
+    const standardHeights = [1080, 720, 480, 360, 240, 144];
     const foundHeights = new Set<number>();
 
     for (const f of formats) {
@@ -376,8 +376,6 @@ export async function probeVideoFormats(
     const defaultHeight = sortedHeights.find((h) => h <= 1080) || sortedHeights[0] || 1080;
 
     const subMap: Record<number, string> = {
-      2160: "4K UHD",
-      1440: "2K QHD",
       1080: "Full HD",
       720: "HD",
       480: "SD",
@@ -394,7 +392,12 @@ export async function probeVideoFormats(
         return Math.abs((dim || 0) - h) <= 15 && f.vcodec && f.vcodec !== "none";
       });
 
-      const bestV = matching.sort((a, b) => (b.tbr || 0) - (a.tbr || 0))[0];
+      // Prioritize native H.264/AVC1 streams for honest bitrate/filesize estimation
+      const avcMatching = matching.filter(
+        (f) => f.vcodec && (f.vcodec.startsWith("avc1") || f.vcodec.startsWith("h264"))
+      );
+      const candidateList = avcMatching.length > 0 ? avcMatching : matching;
+      const bestV = candidateList.sort((a, b) => (b.tbr || 0) - (a.tbr || 0))[0];
       let vSize = bestV ? (bestV.filesize || bestV.filesize_approx || 0) : 0;
       if (!vSize && bestV && (bestV.tbr || bestV.vbr) && duration) {
         const bitrate = bestV.tbr || bestV.vbr || 0;

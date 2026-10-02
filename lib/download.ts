@@ -142,9 +142,113 @@ export function releaseDownloadSlot(): void {
   }
 }
 
+// In-memory concurrency limiter for CPU-intensive FFmpeg transcoding (max 1 transcode at a time on Railway/Docker)
+let activeTranscodes = 0;
+const MAX_CONCURRENT_TRANSCODES = 1;
+const transcodeQueue: Array<() => void> = [];
+
+export async function acquireTranscodeSlot(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const start = () => {
+      activeTranscodes++;
+      resolve(() => {
+        activeTranscodes = Math.max(0, activeTranscodes - 1);
+        if (transcodeQueue.length > 0) {
+          const next = transcodeQueue.shift();
+          if (next) next();
+        }
+      });
+    };
+
+    if (activeTranscodes < MAX_CONCURRENT_TRANSCODES) {
+      start();
+    } else {
+      transcodeQueue.push(start);
+    }
+  });
+}
+
+/**
+ * Transcodes an input media file to universal H.264 (avc1) video + AAC (mp4a) audio in an MP4 container.
+ * Enforces libx264 with veryfast preset, CRF 23, yuv420p pixel format, AAC 192k audio, and +faststart.
+ * Universally playable in Windows Media Player, Windows Movies & TV, VLC, iOS, Android, and web browsers.
+ */
+export async function transcodeToH264Aac(
+  inputPath: string,
+  outputPath: string,
+  ffmpegPath: string,
+  timeoutMs = 120000
+): Promise<void> {
+  const releaseSlot = await acquireTranscodeSlot();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const args = [
+        "-y",
+        "-i",
+        inputPath,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        outputPath,
+      ];
+
+      const child = spawn(ffmpegPath, args, { windowsHide: true });
+      let stderr = "";
+
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+        reject(new DownloadError("DOWNLOAD_TIMEOUT", "Transcoding to H.264/AAC exceeded time limit."));
+      }, timeoutMs);
+
+      child.stderr?.on("data", (chunk: Buffer) => {
+        if (stderr.length < 5000) {
+          stderr += chunk.toString("utf-8");
+        }
+      });
+
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        reject(new DownloadError("DOWNLOAD_FAILED", `FFmpeg transcode failed to start: ${err.message}`));
+      });
+
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0 && fs.existsSync(outputPath)) {
+          resolve();
+        } else {
+          reject(
+            new DownloadError(
+              "DOWNLOAD_FAILED",
+              `FFmpeg transcode failed with code ${code}. ${stderr.slice(-300)}`
+            )
+          );
+        }
+      });
+    });
+  } finally {
+    releaseSlot();
+  }
+}
+
 /**
  * Returns format selector for video downloads.
- * Explicitly requires vcodec!=none to NEVER download an audio-only stream.
+ * Explicitly prefers H.264 (avc1) video and AAC (mp4a) audio.
+ * Excludes standalone audio-only streams (vcodec!=none).
  */
 export function getVideoFormatSelector(
   quality: string,
@@ -167,12 +271,18 @@ export function getVideoFormatSelector(
   if (hasFfmpeg) {
     return {
       requiresFfmpeg: true,
-      selector: `bestvideo[height<=${targetHeight}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`,
+      // Priority:
+      // 1. Native AVC1 (H.264) video <= targetHeight + native mp4a (AAC) audio
+      // 2. Single pre-merged stream with AVC1 <= targetHeight
+      // 3. Native AVC1 video + any best audio
+      // 4. Fallback to best available video <= targetHeight + audio (transcode fallback converts AV1/VP9 to H.264+AAC)
+      // 5. Ultimate fallback if target height missing (strictly requiring video)
+      selector: `bv*[vcodec^=avc1][height<=?${targetHeight}]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=?${targetHeight}][vcodec!=none]/bv*[vcodec^=avc1][height<=?${targetHeight}]+ba/bv*[height<=?${targetHeight}]+ba/b[height<=?${targetHeight}][vcodec!=none]/bv*+ba/b[vcodec!=none]`,
     };
   }
   return {
     requiresFfmpeg: false,
-    selector: `best[height<=${targetHeight}][vcodec!=none]/best[height<=${targetHeight}]/best`,
+    selector: `b[vcodec^=avc1][height<=?${targetHeight}][vcodec!=none]/b[height<=?${targetHeight}][vcodec!=none]/b[vcodec!=none]`,
   };
 }
 
@@ -582,6 +692,9 @@ export async function executeDownload(
         runArgs.push("--extractor-args", `youtube:player_client=${playerClient}`);
       }
 
+      // Enforce format sorting so H.264/avc1 video and AAC/m4a audio are always prioritized first
+      runArgs.push("-S", "vcodec:h264,res,acodec:m4a");
+
       if (type === "audio") {
         const audioConfig = getAudioFormatConfig(format, audioQuality, !!ffmpegPath);
         runArgs.push(...audioConfig.args);
@@ -598,8 +711,8 @@ export async function executeDownload(
         runArgs.push("-f", formatInfo.selector);
         if (ffmpegPath) {
           runArgs.push("--merge-output-format", "mp4");
-          // Ensure merged audio is always universally playable AAC in the MP4 container (plays on Windows Media Player, iOS, etc.)
-          runArgs.push("--postprocessor-args", "Merger:-c:a aac");
+          // Ensure merged video is always universally playable H.264 + AAC in MP4 with faststart (instant playback on Windows Media Player, iOS, etc.)
+          runArgs.push("--postprocessor-args", "Merger:-movflags +faststart -c:a aac");
         }
         expectedExt = "mp4";
         defaultContentType = "video/mp4";
@@ -889,13 +1002,71 @@ export async function executeDownload(
     }
 
     // Verify downloaded media with ffprobe (height, codecs, audio stream presence)
-    const verification = await verifyDownloadedMedia(mediaFilePath, type, quality);
+    let verification = await verifyDownloadedMedia(mediaFilePath, type, quality);
     if (!verification.valid) {
+      if (runResult.outputBuffer.toLowerCase().includes("larger than max-filesize")) {
+        throw new DownloadError(
+          "DOWNLOAD_TOO_LARGE",
+          `The file exceeds the maximum permitted serverless size (${maxFilesizeMb} MB). For long videos, try 360p, 480p, or Audio Only.`
+        );
+      }
       console.warn(`[PullMeta Verification Mismatch] ${verification.error}`);
       throw new DownloadError(
         "DOWNLOAD_FAILED",
         verification.error || "The downloaded media file failed stream verification."
       );
+    }
+
+    // MANDATORY CODEC CHECK FOR VIDEO:
+    // If video is not H.264 (avc1/h264) or audio is not AAC (aac/mp4a), automatically transcode with FFmpeg
+    let finalFilePath = mediaFilePath;
+    let finalFileSize = stat.size;
+
+    if (type === "video") {
+      const vCodec = (verification.videoCodec || "").toLowerCase();
+      const aCodec = (verification.audioCodec || "").toLowerCase();
+      const isH264 = vCodec === "h264" || vCodec === "avc1";
+      const isAac = aCodec === "aac" || aCodec === "mp4a";
+
+      if (!isH264 || !isAac) {
+        if (!ffmpegPath) {
+          throw new DownloadError(
+            "DOWNLOAD_FAILED",
+            `Video stream is encoded in ${vCodec || "unknown format"} which requires FFmpeg to convert to universally playable H.264/AAC.`
+          );
+        }
+
+        console.log(
+          `[PullMeta Transcode] Media downloaded with vcodec=${vCodec}, acodec=${aCodec}. Running universal H.264+AAC transcode...`
+        );
+
+        const transcodedFilePath = path.join(tempDir, `transcoded-${randomUUID()}.mp4`);
+        await transcodeToH264Aac(mediaFilePath, transcodedFilePath, ffmpegPath, timeoutMs);
+
+        // Remove the original non-compliant file
+        await fs.promises.unlink(mediaFilePath).catch(() => {});
+
+        finalFilePath = transcodedFilePath;
+        const transcodedStat = await fs.promises.stat(finalFilePath);
+        finalFileSize = transcodedStat.size;
+
+        // Re-verify the transcoded file with ffprobe
+        const postVerification = await verifyDownloadedMedia(finalFilePath, "video", quality);
+        const postVCodec = (postVerification.videoCodec || "").toLowerCase();
+        const postACodec = (postVerification.audioCodec || "").toLowerCase();
+
+        if (
+          !postVerification.valid ||
+          (postVCodec !== "h264" && postVCodec !== "avc1") ||
+          (postACodec !== "aac" && postACodec !== "mp4a")
+        ) {
+          throw new DownloadError(
+            "DOWNLOAD_FAILED",
+            `Video conversion failed to produce a valid H.264+AAC media stream (got v=${postVCodec}, a=${postACodec}).`
+          );
+        }
+        verification = postVerification;
+      }
     }
 
     // Read metadata title if written
@@ -912,7 +1083,7 @@ export async function executeDownload(
     }
 
     const ext =
-      path.extname(mediaFile).replace(/^\./, "").toLowerCase() || expectedExt;
+      path.extname(finalFilePath).replace(/^\./, "").toLowerCase() || expectedExt;
 
     const qualityLabel =
       type === "audio"
@@ -936,10 +1107,10 @@ export async function executeDownload(
     else if (ext === "mp4") contentType = "video/mp4";
 
     return {
-      filePath: mediaFilePath,
+      filePath: finalFilePath,
       tempDir,
       fileName: safeFileName,
-      fileSize: stat.size,
+      fileSize: finalFileSize,
       contentType,
     };
   } catch (err) {
