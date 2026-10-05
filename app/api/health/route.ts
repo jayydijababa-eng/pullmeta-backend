@@ -7,6 +7,8 @@ import { getJsRuntimeArgs } from "@/lib/ytdlp";
 import { jobQueue } from "@/lib/jobs";
 import { fileCache } from "@/lib/fileCache";
 import { getDiskSpace } from "@/lib/disk";
+import { storageDriver, isS3Configured } from "@/lib/storage";
+import { isRedisConfigured } from "@/lib/redis";
 
 export const runtime = "nodejs";
 
@@ -32,8 +34,9 @@ export async function GET(req: NextRequest) {
   }
 
   const disk = await getDiskSpace();
-  const queueStats = jobQueue.getStats();
+  const queueStats = await Promise.resolve(jobQueue.getStats());
   const cacheStats = fileCache.getStats();
+  const storageStats = await storageDriver.getStats();
 
   return NextResponse.json(
     {
@@ -46,12 +49,20 @@ export async function GET(req: NextRequest) {
       jsRuntimes: getJsRuntimeArgs()
         .filter((_, i) => i % 2 === 1)
         .map((r) => r.split(":")[0]),
+      scaling: {
+        queueDriver: queueStats.driver,
+        storageDriver: storageStats.driver,
+        redisConfigured: isRedisConfigured(),
+        s3Configured: isS3Configured(),
+      },
       queue: {
+        driver: queueStats.driver,
         activeJobs: queueStats.activeJobs,
         queuedJobs: queueStats.queuedJobs,
         maxConcurrent: queueStats.maxConcurrent,
         maxQueueSize: queueStats.maxQueueSize,
       },
+      storage: storageStats,
       fileCache: {
         cachedFiles: cacheStats.entriesCount,
         totalSizeMb: Math.round(cacheStats.totalBytes / (1024 * 1024)),

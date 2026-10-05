@@ -9,16 +9,22 @@
     "dev": "next dev -p 4000",
     "build": "next build",
     "start": "next start -p 4000",
+    "worker": "tsx worker.ts",
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "update-ytdlp": "yt-dlp -U"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@upstash/redis": "^1.34.4",
+    "bullmq": "^6.3.11",
+    "ioredis": "^6.0.0",
     "next": "16.3.7",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@types/node": "^20",

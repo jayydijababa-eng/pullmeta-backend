@@ -23,7 +23,7 @@ export async function GET(
     );
   }
 
-  const job = jobQueue.getJob(jobId);
+  const job = await Promise.resolve(jobQueue.getJob(jobId));
   if (!job) {
     return NextResponse.json(
       {

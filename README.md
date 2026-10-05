@@ -1,40 +1,89 @@
 # PullMeta Backend
 
-High-performance, containerized YouTube video downloader, audio extractor, and metadata inspection service built with Next.js App Router, yt-dlp, and FFmpeg.
+High-performance, containerized YouTube video downloader, audio extractor, and metadata inspection service built with Next.js App Router, BullMQ + Redis, yt-dlp, and FFmpeg.
 
 ---
 
 ## Overview & Features
 
-PullMeta Backend is a dedicated, **YouTube-only** media processing engine designed for serverless and container deployments (Railway, Render, Hugging Face, or self-hosted Docker):
+PullMeta Backend is an enterprise-grade, **YouTube-only** media processing engine designed for both single-container hosting and large-scale (1,000+ concurrent users) distributed deployments on Railway, Render, AWS, or self-hosted Docker:
 
 - **YouTube-Only Architecture:** Tailored strictly for YouTube URLs (`watch`, `shorts`, `youtu.be`, and live stream archives).
-- **Verified Full HD & 4K Quality:** Dynamic stream probing via `yt-dlp` returns honest available resolutions (144p to 4K 2160p) with actual filesize approximations.
+- **Verified Full HD & 4K Quality:** Dynamic stream probing via `yt-dlp` returns honest available resolutions (144p to 4K 2160p) with actual filesize approximations. Min dimension check (`min(width, height)`) accurately detects vertical Shorts without resolution distortion.
 - **Lossless & High-Bitrate Audio:** Extracts pure audio streams transcoded to universally compatible MP3 (320kbps, 256kbps, 128kbps) or native M4A/AAC without re-encoding video.
 - **FFmpeg & FFprobe Verification:** Merges adaptive video and audio streams into standard MP4 containers with universally playable AAC audio, verified via `ffprobe` prior to client delivery.
-- **Enterprise Cookie Authentication:** Resolves YouTube's datacenter bot checks via environment variable `YOUTUBE_COOKIES` with support for both Netscape format and JSON array exports.
+- **1,000+ Concurrent Scaling (Distributed Mode):**
+  - **Decoupled Stateless Web & Workers:** Next.js API servers handle user traffic, while 2–4+ standalone worker containers run yt-dlp + FFmpeg.
+  - **BullMQ + Redis Distributed Queue:** Coordinates downloads across any number of worker containers without race conditions or memory bottlenecks.
+  - **Distributed Request Coalescing:** When 100 users request the same viral video at the same time, it is downloaded only once; all 100 users receive the stream simultaneously.
+  - **Cloud Object Storage (Cloudflare R2 / S3):** Finished downloads are offloaded to Cloudflare R2 ($0 egress fees) with direct pre-signed edge download URLs, completely relieving backend network bandwidth.
+  - **Zero-Config Local Fallback:** When Redis or S3 are not configured, seamlessly falls back to the built-in in-memory FIFO queue and local disk cache for development and single-container deployments.
+- **Enterprise Anti-Bot & Cookie Authentication:** Resolves YouTube's datacenter bot checks via environment variable `YOUTUBE_COOKIES` (Netscape or JSON format), paired with Deno + Node 22 for EJS JavaScript challenge solving.
 - **Isolated Request Sandboxing:** Every download runs in an isolated temporary directory with a scoped, single-use cookie file that is automatically purged immediately upon completion.
-- **Proxy Support:** Optional residential or datacenter proxy integration via `PROXY_URL` to route requests through clean IP addresses.
-- **Health & Readiness Check:** `/api/health` exposes sanitized booleans (`cookiesLoaded`, `proxyConfigured`, `ytDlpVersion`, `hasFfmpeg`) without leaking sensitive tokens.
+- **Disk Protection Ceiling:** Real-time disk monitoring halts new jobs if storage exceeds 92% capacity or free space drops below 500 MB.
+- **Health & Readiness Check:** `/api/health` exposes sanitized system metrics (`queueDriver`, `storageDriver`, `redisConfigured`, `s3Configured`, `cookiesLoaded`, `proxyConfigured`, `ytDlpVersion`, `hasFfmpeg`) without leaking private tokens.
 
 ---
 
 ## Tech Stack
 
-- **Runtime & Framework:** Node.js 20 LTS, Next.js 16 (App Router Route Handlers)
+- **Runtime & Framework:** Node.js 22 LTS, Next.js 16 (App Router Route Handlers)
 - **Language:** TypeScript 5 (Strict Mode)
-- **Media Engine:** `yt-dlp` (Latest upstream standalone release)
+- **Media Engine:** `yt-dlp` (Latest upstream standalone release with auto-update at startup)
 - **Audio/Video Transcoder:** `ffmpeg` & `ffprobe`
-- **JavaScript Challenge Solver:** Deno (default) + Node.js 22 (`--js-runtimes`). Node 20 is NOT supported by yt-dlp EJS.
+- **Distributed Queue:** BullMQ 6 + Redis (`ioredis`) with seamless in-memory fallback
+- **Cloud Storage:** AWS SDK S3 v3 compatible with Cloudflare R2 ($0 egress), AWS S3, MinIO, Wasabi
+- **JavaScript Challenge Solver:** Deno 2 (default) + Node.js 22 (`--js-runtimes`). Node 20 is NOT supported by yt-dlp EJS.
 - **Testing & Quality:** Vitest 3, TypeScript compiler (`tsc --noEmit`)
-- **Deployment:** Railway / Docker (`node:20-bookworm-slim`)
+- **Deployment:** Railway / Docker (`node:22-bookworm-slim`)
+
+---
+
+## Architecture
+
+```
+                  ┌─────────────────────────────────┐
+                  │   Client / Frontend (Next.js)   │
+                  └───────────────┬─────────────────┘
+                                  │ POST /api/download
+                                  ▼
+                  ┌─────────────────────────────────┐
+                  │    Stateless Web Server Tier     │
+                  │   (Next.js App Router on Port)  │
+                  └───────┬─────────────────┬───────┘
+                          │                 │
+    Check / Coalesce Job  │                 │ Direct Pre-signed URL
+                          ▼                 │ (Cloudflare R2 / S3)
+       ┌──────────────────────────────┐     │
+       │       Redis 7 (BullMQ)       │     │
+       │  • Queue: pullmeta-downloads │     │
+       │  • Target Locks & Coalescing │     │
+       │  • Job Status & Progress     │     │
+       └──────────────┬───────────────┘     │
+                      │                     │
+           Consume    │                     │
+                      ▼                     │
+       ┌──────────────────────────────┐     │
+       │   Dedicated Worker Pods      │     │
+       │  (yt-dlp + FFmpeg + Deno)    │     │
+       │  • 2–3 jobs per container    │     │
+       │  • Upload to R2 / S3 Bucket  │     │
+       │  • Instant Local Temp Purge  │     │
+       └──────────────┬───────────────┘     │
+                      │                     │
+                      ▼                     ▼
+       ┌────────────────────────────────────────────┐
+       │   Cloudflare R2 Object Storage Bucket      │
+       │   ($0 Egress Bandwidth / Global Edge CDN)  │
+       └────────────────────────────────────────────┘
+```
 
 ---
 
 ## Local Setup & Running
 
 ### Prerequisites
-1. **Node.js** >= 18.18.0 (Node 20+ recommended)
+1. **Node.js** >= 18.18.0 (Node 22+ recommended)
 2. **FFmpeg & FFprobe** installed and available in system `PATH`
 3. **yt-dlp** installed or placed in `bin/` or system `PATH`
 
@@ -50,8 +99,11 @@ npm install
 # Copy environment variable template
 cp .env.example .env
 
-# Run development server (runs on Port 4000)
+# Run development server (Port 4000)
 npm run dev
+
+# (Optional) Run standalone background worker
+npm run worker
 ```
 
 ### Running Tests & Linting
@@ -65,99 +117,63 @@ npm run lint
 
 ---
 
-## Environment Variables
+## 1,000+ Concurrent Users: Railway Deployment Guide
 
-| Variable | Required | Default | Description |
+### Step 1: Deploy Web Service
+1. Create a service in Railway connected to this repository (`pullmeta-backend`).
+2. Set Build Command: `npm run build`
+3. Set Start Command: `npx next start -p ${PORT:-10000} -H 0.0.0.0` (or use `Procfile`).
+
+### Step 2: Add Redis Database
+1. In your Railway project, click **+ New** -> **Database** -> **Add Redis**.
+2. Railway generates the `REDIS_URL` connection string automatically.
+3. In your Web Service **Variables**, click **Add Reference** to link `${{Redis.REDIS_URL}}`.
+
+### Step 3: Deploy Worker Service
+1. In the same Railway project, click **+ New** -> **GitHub Repo** -> select the same repository (`pullmeta-backend`).
+2. Go to **Settings** -> **Deploy**:
+   - Set **Custom Start Command** to: `npm run worker` (or point Dockerfile Path to `Dockerfile.worker`).
+3. Under **Variables**:
+   - Link `REDIS_URL` to `${{Redis.REDIS_URL}}`.
+   - Set `WORKER_CONCURRENCY=2` (or `3` depending on RAM allocated).
+   - Set your `YOUTUBE_COOKIES` if configured.
+   - Set your Cloudflare R2 credentials (see below).
+4. Scale this Worker Service to 2–4 replicas in Railway for seamless distributed capacity!
+
+### Step 4: Configure Cloudflare R2 ($0 Egress Bandwidth)
+Standard AWS S3 charges ~$0.09/GB for download egress. Cloudflare R2 has **$0 egress fees**.
+1. In Cloudflare Dashboard, go to **R2 Object Storage** -> **Create Bucket** (e.g. `pullmeta-downloads`).
+2. Go to **Manage R2 API Tokens** -> **Create API Token** (Permissions: Object Read & Write).
+3. In both Web and Worker services in Railway, set:
+   ```env
+   S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+   S3_REGION=auto
+   S3_BUCKET=pullmeta-downloads
+   S3_ACCESS_KEY_ID=<your_r2_token_id>
+   S3_SECRET_ACCESS_KEY=<your_r2_token_secret>
+   ```
+
+---
+
+## Environment Variables Reference
+
+| Variable | Mode | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `YOUTUBE_COOKIES` | Optional | *None* | YouTube authentication cookies in Netscape `cookies.txt` or JSON array format. Bypasses datacenter bot checks on cloud servers. |
-| `PROXY_URL` | Optional | *None* | Optional HTTP/HTTPS/SOCKS5 proxy URL (e.g. `http://user:pass@proxy.example.com:8080`). Routed directly to yt-dlp. |
-| `YOUTUBE_PLAYER_CLIENT` | Optional | *(empty)* | Leave empty so yt-dlp picks its defaults. Never use `android`, `ios` or `mweb` (require PO token, cause HTTP 403). |
-| `PORT` | Optional | `4000` | Port on which the backend server listens (dynamically set by Railway/Render). |
-| `NODE_ENV` | Optional | `development` | Server runtime environment (`production` or `development`). |
-| `NEXT_PUBLIC_APP_URL` | Optional | `http://localhost:3000` | Origin URL of the frontend application allowed for CORS requests. |
-| `MAX_FILE_SIZE_BYTES` | Optional | `5368709120` (5 GB) | Hard ceiling on downloaded media size to prevent storage exhaustion. |
-| `DOWNLOAD_TIMEOUT_MS` | Optional | `600000` (10 min) | Max processing duration before aborting stalled downloads. |
-| `MAX_CONCURRENT_DOWNLOADS` | Optional | `5` | Maximum simultaneous download slots processed in memory. |
-
----
-
-## How to Export YouTube Cookies
-
-To bypass YouTube's datacenter bot protection reliably on cloud servers, provide cookies from an active session:
-
-1. **Use a Separate Account:** Never use your personal, primary Google account. Create or use a dedicated burner/non-primary Google account.
-2. **Open an Incognito/Private Window:** Launch a fresh private browser window.
-3. **Log In to YouTube:** Go to [youtube.com](https://www.youtube.com) and sign in with the secondary account.
-4. **Open Robots Text:** Navigate to `https://www.youtube.com/robots.txt` in the same tab (this ensures cookies are persisted without background trackers writing ephemeral session markers).
-5. **Export Cookies:** Open a trusted cookie export extension (such as **"Get cookies.txt LOCALLY"** or **"Cookie-Editor"**):
-   - **Netscape format:** Choose "Export as cookies.txt"
-   - **JSON format:** Choose "Export as JSON"
-6. **Close the Private Window:** Close the incognito window **without clicking Log Out**. (Clicking Log Out invalidates the session keys immediately on Google's servers).
-
----
-
-## How to Deploy on Railway & Set Cookies
-
-1. **Link Repository on Railway:**
-   - In your [Railway Dashboard](https://railway.app), create a new project from your backend GitHub repository (`pullmeta-backend`).
-   - Railway will automatically detect `Dockerfile` or `railway.json`.
-
-2. **Configure Environment Variables:**
-   - Go to your service **Variables** tab.
-   - Click **New Variable** -> enter name `YOUTUBE_COOKIES`.
-   - In the value box, paste the raw content of your exported cookies (either the multi-line Netscape text or the raw JSON array). Railway natively preserves multi-line string variables.
-   - *(Optional)* Add `PROXY_URL` if routing through a residential or datacenter proxy.
-   - Set `NEXT_PUBLIC_APP_URL` to your production frontend URL (e.g. `https://pullmeta.com`).
-
-3. **Deploy & Verify:**
-   - Click **Deploy**.
-   - Inspect build and deployment logs:
-     ```
-     [Startup Check] FFmpeg verified: /usr/bin/ffmpeg
-     [Startup Check] yt-dlp verified: /usr/local/bin/yt-dlp
-     [YouTube Cookies] Successfully initialized and secured authentication cookies at server startup.
-     ```
-   - Query the health endpoint to confirm status:
-     ```bash
-     curl https://your-backend.railway.app/api/health
-     # Returns: {"ok":true,"cookiesLoaded":true,"proxyConfigured":false,"ytDlpVersion":"2026.08.19","hasFfmpeg":true}
-     ```
-
----
-
-## Troubleshooting
-
-### "Bot / Sign-in Check" Error
-- **Cause:** YouTube actively monitors IP ranges assigned to major cloud hosting providers (AWS, GCP, Railway, DigitalOcean, Hetzner). When requests originate from datacenter subnets using unauthenticated web clients, YouTube returns a challenge: `Sign in to confirm you're not a bot`.
-- **Resolution:**
-  1. Ensure `YOUTUBE_COOKIES` is configured in Railway with fresh cookies exported from an incognito session.
-  2. PullMeta lets yt-dlp choose PO-token-free clients and falls back to `tv,web_safari` and `android_vr,web_embedded`, with Deno/Node 22 solving JS challenges.
-  3. If cloud hosting IP ranges become aggressively blacklisted, configure `PROXY_URL` with a residential proxy provider.
-
-### "Rate limit exceeded" Error
-- **Cause & Diagnosis:**
-  1. **Application Rate Limiter:** The backend limits requests per client IP. Behind reverse proxies (like Railway, Cloudflare, or Vercel), if `X-Forwarded-For` or `CF-Connecting-IP` is misread or requests default to `127.0.0.1`, all visitors share the same rate-limit bucket.
-  2. **YouTube 429 Too Many Requests:** When too many concurrent or rapid extraction/download calls originate from the same cloud IP address, YouTube responds with HTTP 429 / "Too Many Requests".
-- **Resolution & Protections:**
-  1. **Proxy-Aware Real Client IP Extraction:** The backend inspects `CF-Connecting-IP`, `X-Real-IP`, `True-Client-IP`, `X-Client-IP`, and filters internal hops from `X-Forwarded-For` to isolate genuine client IPs.
-  2. **Sensible Default Limits:** Default limits are set to **20 downloads per IP per 15 minutes** (customizable via `RATE_LIMIT_DOWNLOAD_MAX`) and **30 extract requests per 15 minutes** (`RATE_LIMIT_EXTRACT_MAX`).
-  3. **Concurrent Job Queue:** Limits concurrent `yt-dlp` jobs to **2-3** (via `MAX_CONCURRENT_DOWNLOADS=3`). Excess requests wait safely in an asynchronous FIFO queue instead of immediately failing.
-  4. **Video Info Caching:** Video metadata and format probing results are cached in-memory for 10 minutes (`DEFAULT_TTL_MS = 10 * 60 * 1000`). Repeated extractions/downloads for the same video are served instantly without spawning `yt-dlp`.
-  5. **Request Spacing (`--sleep-requests`):** Sub-requests are spaced with `--sleep-requests 1.5` so YouTube endpoints are not hammered in sub-seconds.
-  6. **Residential Proxy:** If cloud hosting IPs are persistently rate-limited by YouTube, configure `PROXY_URL` with a residential proxy provider.
-
-### Cookies Expiring
-- Google cookie sessions typically remain valid for several weeks or months unless logged out.
-- If downloads begin failing with temporary unavailability errors, re-export fresh cookies from your burner account following the steps above and update the `YOUTUBE_COOKIES` variable in Railway.
-
----
-
-## Security Notes
-
-- **Never Commit Cookies:** Never store cookies in code, files committed to Git, or public issue trackers. Keep `.gitignore` updated.
-- **Use Burner Accounts:** Always use an isolated, non-primary Google account for exporting cookies.
-- **Auto-Rotation & Invalidation:** If cookies are ever accidentally exposed, immediately log out of the Google account across all devices to revoke all active session tokens.
-- **Sanitized Client Errors:** The backend sanitizes all technical errors. Internal paths, proxy credentials, and cookie details are logged strictly server-side and never returned to the frontend.
+| `REDIS_URL` | Distributed | *None* | Connection URL for Redis. Enables BullMQ distributed queue and request coalescing. |
+| `WORKER_CONCURRENCY` | Distributed | `2` | Number of simultaneous yt-dlp download jobs processed per worker container. |
+| `S3_ENDPOINT` | Distributed | *None* | S3-compatible endpoint (e.g., `https://<account>.r2.cloudflarestorage.com`). |
+| `S3_BUCKET` | Distributed | *None* | Bucket name for storing completed media files. |
+| `S3_ACCESS_KEY_ID` | Distributed | *None* | S3 API Access Key ID. |
+| `S3_SECRET_ACCESS_KEY` | Distributed | *None* | S3 API Secret Access Key. |
+| `S3_PUBLIC_DOMAIN` | Optional | *None* | Optional custom CDN domain for direct downloads (e.g., `https://downloads.pullmeta.com`). |
+| `YOUTUBE_COOKIES` | Anti-Bot | *None* | YouTube authentication cookies in Netscape `cookies.txt` or JSON array format. |
+| `PROXY_URL` | Anti-Bot | *None* | Optional HTTP/HTTPS/SOCKS5 proxy URL routed to yt-dlp. |
+| `YT_DLP_AUTO_UPDATE` | Anti-Bot | `true` | Auto-updates yt-dlp at server startup to prevent stale extractor errors. |
+| `MAX_CONCURRENT_JOBS` | Local Mode | `2` | Maximum concurrent jobs in single-instance in-memory queue. |
+| `MAX_QUEUE_SIZE` | All Modes | `1000` | Maximum queue depth before rate-limiting new requests. |
+| `RATE_LIMIT_DOWNLOAD_MAX` | All Modes | `20` | Max download requests permitted per IP per 15 minutes. |
+| `RATE_LIMIT_EXTRACT_MAX` | All Modes | `30` | Max video metadata extract requests permitted per IP per 15 minutes. |
+| `FILE_CACHE_TTL_MS` | Local Mode | `3600000` | 1 hour local disk cache retention. |
 
 ---
 

@@ -104,7 +104,7 @@ describe("Scale & Concurrency Load Test (100+ Concurrent Users)", () => {
     while (!allFinished && Date.now() - pollStart < 30000) {
       let finishedCount = 0;
       for (const id of uniqueJobIds) {
-        const job = jobQueue.getJob(id);
+        const job = await jobQueue.getJob(id);
         if (job?.status === "ready") {
           finishedCount++;
         } else if (job?.status === "failed") {

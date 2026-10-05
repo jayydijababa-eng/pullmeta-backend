@@ -26,13 +26,30 @@ export async function GET(
     );
   }
 
-  const job = jobQueue.getJob(jobId);
-  if (!job || job.status !== "ready" || !job.filePath) {
+  const job = await Promise.resolve(jobQueue.getJob(jobId));
+  if (!job || job.status !== "ready") {
     return NextResponse.json(
       {
         error: {
           code: "FILE_NOT_READY",
           message: "Media file is not ready for download or has expired.",
+        },
+      },
+      { status: 404, headers: corsHeaders }
+    );
+  }
+
+  // If the file is stored in Cloud Storage (S3 / Cloudflare R2), redirect directly to edge URL
+  if (job.downloadUrl && (job.downloadUrl.startsWith("http://") || job.downloadUrl.startsWith("https://"))) {
+    return NextResponse.redirect(job.downloadUrl, 307);
+  }
+
+  if (!job.filePath) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "FILE_NOT_FOUND",
+          message: "Media file location is unavailable.",
         },
       },
       { status: 404, headers: corsHeaders }
