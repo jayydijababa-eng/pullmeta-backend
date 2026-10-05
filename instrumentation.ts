@@ -18,5 +18,8 @@ export async function register() {
     await initServerCookiesStartup().catch((err) => {
       console.error("[Startup Cookie Error]", err);
     });
+
+    const { initServerMaintenance } = await import("@/lib/cleanup");
+    initServerMaintenance();
   }
 }

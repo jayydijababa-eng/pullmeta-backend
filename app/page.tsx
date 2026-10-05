@@ -191,7 +191,94 @@ export default function BackendStatusPage() {
           </a>
         </div>
 
-        {/* Endpoint 3: Extract */}
+        {/* Endpoint 3: Async Download Creation */}
+        <div
+          style={{
+            padding: "16px 20px",
+            backgroundColor: "#1C1B15",
+            border: "1px solid #2E2C25",
+            borderRadius: "6px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <span
+              style={{
+                backgroundColor: "#22c55e22",
+                color: "#22c55e",
+                fontSize: "11px",
+                fontWeight: 700,
+                padding: "2px 6px",
+                borderRadius: "3px",
+              }}
+            >
+              POST
+            </span>
+            <strong style={{ fontSize: "14px", color: "#F3F0E8" }}>/api/download</strong>
+          </div>
+          <p style={{ fontSize: "12px", color: "#8E8A7E", margin: "4px 0 0 0" }}>
+            Creates or coalesces an async download job, returning <code>jobId</code>, queue position, and status.
+          </p>
+        </div>
+
+        {/* Endpoint 4: Async Job Status */}
+        <div
+          style={{
+            padding: "16px 20px",
+            backgroundColor: "#1C1B15",
+            border: "1px solid #2E2C25",
+            borderRadius: "6px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <span
+              style={{
+                backgroundColor: "#38bdf822",
+                color: "#38bdf8",
+                fontSize: "11px",
+                fontWeight: 700,
+                padding: "2px 6px",
+                borderRadius: "3px",
+              }}
+            >
+              GET
+            </span>
+            <strong style={{ fontSize: "14px", color: "#F3F0E8" }}>/api/download/status/:jobId</strong>
+          </div>
+          <p style={{ fontSize: "12px", color: "#8E8A7E", margin: "4px 0 0 0" }}>
+            Polls live job status, progress percentage, and queue position (e.g. <code>queued</code>, <code>processing</code>, <code>ready</code>).
+          </p>
+        </div>
+
+        {/* Endpoint 5: Media File Stream */}
+        <div
+          style={{
+            padding: "16px 20px",
+            backgroundColor: "#1C1B15",
+            border: "1px solid #2E2C25",
+            borderRadius: "6px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <span
+              style={{
+                backgroundColor: "#a855f722",
+                color: "#a855f7",
+                fontSize: "11px",
+                fontWeight: 700,
+                padding: "2px 6px",
+                borderRadius: "3px",
+              }}
+            >
+              GET
+            </span>
+            <strong style={{ fontSize: "14px", color: "#F3F0E8" }}>/api/download/file/:jobId</strong>
+          </div>
+          <p style={{ fontSize: "12px", color: "#8E8A7E", margin: "4px 0 0 0" }}>
+            Streams completed media file from disk with HTTP Range (206) and seek support.
+          </p>
+        </div>
+
+        {/* Endpoint 6: Extract */}
         <div
           style={{
             padding: "16px 20px",

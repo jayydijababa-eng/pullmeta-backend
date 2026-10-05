@@ -1,10 +1,10 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import { Readable } from "node:stream";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { createErrorResponse } from "@/lib/errors";
 import { checkRateLimit, getClientIp } from "@/lib/ratelimit";
-import { parseMediaUrl, parseYouTubeVideoId } from "@/lib/youtube";
+import { parseMediaUrl } from "@/lib/youtube";
 import {
   DownloadType,
   VideoQuality,
@@ -18,9 +18,10 @@ import {
   cleanupDirectory,
   releaseDownloadSlot,
 } from "@/lib/download";
+import { jobQueue } from "@/lib/jobs";
 
 export const runtime = "nodejs";
-export const maxDuration = 60; // Execution limit
+export const maxDuration = 120;
 
 export async function OPTIONS(req: NextRequest) {
   return handleCorsPreflight(req);
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
     const retryAfter = Math.ceil(rateLimit.resetInMs / 1000).toString();
     return createErrorResponse(
       "DOWNLOAD_RATE_LIMITED",
-      "Rate limit reached. Please wait a few minutes before downloading again.",
+      "Rate limit reached. Please wait a few minutes before creating new download jobs.",
       {
         ...corsHeaders,
         "Retry-After": retryAfter,
@@ -52,6 +53,7 @@ export async function POST(req: NextRequest) {
     quality?: string;
     format?: string;
     audioQuality?: string;
+    sync?: boolean;
   };
   try {
     const text = await req.text();
@@ -71,7 +73,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { url, type, quality, format, audioQuality } = body;
+  const { url, type, quality, format, audioQuality, sync } = body;
   if (!url || typeof url !== "string") {
     return createErrorResponse(
       "INVALID_URL",
@@ -136,77 +138,121 @@ export async function POST(req: NextRequest) {
     validAudioQuality = rawAudioQuality;
   }
 
-  // 5. Execute download subprocess in temporary directory
-  let downloadResult;
+  // 5. Backwards-compatibility: Synchronous execution if explicitly requested (sync=true)
+  if (sync === true || req.nextUrl.searchParams.get("sync") === "true") {
+    let downloadResult;
+    try {
+      downloadResult = await executeDownload({
+        videoId,
+        url: originalUrl,
+        type: downloadType,
+        quality: validQuality,
+        format: validFormat,
+        audioQuality: validAudioQuality,
+        abortSignal: req.signal,
+      });
+    } catch (err) {
+      if (err instanceof DownloadError) {
+        return createErrorResponse(err.code, err.message, corsHeaders);
+      }
+      return createErrorResponse(
+        "DOWNLOAD_FAILED",
+        "An unexpected error occurred while preparing the media download.",
+        corsHeaders
+      );
+    }
+
+    try {
+      const nodeStream = fs.createReadStream(downloadResult.filePath);
+      let isCleaned = false;
+
+      const doCleanup = () => {
+        if (!isCleaned) {
+          isCleaned = true;
+          cleanupDirectory(downloadResult.tempDir).catch(() => {});
+          releaseDownloadSlot();
+        }
+      };
+
+      nodeStream.on("close", doCleanup);
+      nodeStream.on("error", doCleanup);
+
+      if (req.signal) {
+        req.signal.addEventListener("abort", () => {
+          try {
+            nodeStream.destroy();
+          } catch {
+            // ignore
+          }
+          doCleanup();
+        });
+      }
+
+      const webStream = Readable.toWeb(nodeStream) as unknown as BodyInit;
+      const asciiName = downloadResult.fileName.replace(/[^\x20-\x7E]/g, "_");
+      const encodedName = encodeURIComponent(downloadResult.fileName);
+
+      return new Response(webStream, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": downloadResult.contentType,
+          "Content-Disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+          "Content-Length": downloadResult.fileSize.toString(),
+          "Cache-Control": "no-store",
+        },
+      });
+    } catch {
+      await cleanupDirectory(downloadResult.tempDir);
+      releaseDownloadSlot();
+      return createErrorResponse(
+        "DOWNLOAD_FAILED",
+        "Failed to stream the media download.",
+        corsHeaders
+      );
+    }
+  }
+
+  // 6. DEFAULT ASYNC JOB FLOW: Create or attach to an async job
   try {
-    downloadResult = await executeDownload({
-      videoId,
+    const { job, coalesced, cached } = await jobQueue.createOrGetJob({
       url: originalUrl,
+      videoId,
       type: downloadType,
       quality: validQuality,
       format: validFormat,
       audioQuality: validAudioQuality,
-      abortSignal: req.signal,
+      clientIp: ip,
     });
-  } catch (err) {
+
+    return NextResponse.json(
+      {
+        jobId: job.id,
+        status: job.status,
+        queuePosition: job.queuePosition,
+        progress: job.progress || 0,
+        stage: job.stage,
+        downloadUrl: job.downloadUrl,
+        fileName: job.fileName,
+        fileSize: job.fileSize,
+        cached,
+        coalesced,
+      },
+      {
+        status: job.status === "ready" ? 200 : 202,
+        headers: {
+          ...corsHeaders,
+          "Cache-Control": "no-cache",
+        },
+      }
+    );
+  } catch (err: any) {
     if (err instanceof DownloadError) {
       return createErrorResponse(err.code, err.message, corsHeaders);
     }
     return createErrorResponse(
       "DOWNLOAD_FAILED",
-      "An unexpected error occurred while preparing the media download.",
-      corsHeaders
-    );
-  }
-
-  // 6. Stream the media file to the client with automatic cleanup
-  try {
-    const nodeStream = fs.createReadStream(downloadResult.filePath);
-    let isCleaned = false;
-
-    const doCleanup = () => {
-      if (!isCleaned) {
-        isCleaned = true;
-        cleanupDirectory(downloadResult.tempDir).catch(() => {});
-        releaseDownloadSlot();
-      }
-    };
-
-    nodeStream.on("close", doCleanup);
-    nodeStream.on("error", doCleanup);
-
-    if (req.signal) {
-      req.signal.addEventListener("abort", () => {
-        try {
-          nodeStream.destroy();
-        } catch {
-          // ignore
-        }
-        doCleanup();
-      });
-    }
-
-    const webStream = Readable.toWeb(nodeStream) as unknown as BodyInit;
-
-    const asciiName = downloadResult.fileName.replace(/[^\x20-\x7E]/g, "_");
-    const encodedName = encodeURIComponent(downloadResult.fileName);
-
-    return new Response(webStream, {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": downloadResult.contentType,
-        "Content-Disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
-        "Content-Length": downloadResult.fileSize.toString(),
-        "Cache-Control": "no-store",
-      },
-    });
-  } catch {
-    await cleanupDirectory(downloadResult.tempDir);
-    releaseDownloadSlot();
-    return createErrorResponse(
-      "DOWNLOAD_FAILED",
-      "Failed to stream the media download.",
+      err?.message || "Failed to enqueue download job.",
       corsHeaders
     );
   }

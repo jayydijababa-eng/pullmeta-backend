@@ -190,6 +190,7 @@ describe("POST /api/download Route Handler", () => {
       body: JSON.stringify({
         url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         quality: "1080p",
+        sync: true,
       }),
     });
 
@@ -279,6 +280,7 @@ describe("POST /api/download Route Handler", () => {
       body: JSON.stringify({
         url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         quality: "best",
+        sync: true,
       }),
     });
 
@@ -299,6 +301,7 @@ describe("POST /api/download Route Handler", () => {
       body: JSON.stringify({
         url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         quality: "2160p",
+        sync: true,
       }),
     });
 
@@ -321,6 +324,7 @@ describe("POST /api/download Route Handler", () => {
       body: JSON.stringify({
         url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         quality: "2160p",
+        sync: true,
       }),
     });
 
@@ -344,6 +348,7 @@ describe("POST /api/download Route Handler", () => {
       body: JSON.stringify({
         url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         quality: "720p",
+        sync: true,
       }),
     });
 
@@ -369,7 +374,7 @@ describe("POST /api/download Route Handler", () => {
       const req = new NextRequest("http://localhost:4000/api/download", {
         method: "POST",
         headers: { "x-forwarded-for": "192.168.1.100" },
-        body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+        body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", sync: true }),
       });
       const res = await POST(req);
       expect(res.status).toBe(200);
@@ -396,7 +401,7 @@ describe("POST /api/download Route Handler", () => {
 
     const req = new NextRequest("http://localhost:4000/api/download", {
       method: "POST",
-      body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+      body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", sync: true }),
     });
 
     const res = await POST(req);
