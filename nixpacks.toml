@@ -1,8 +1,9 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "python3", "yt-dlp", "nodejs_20"]
+nixPkgs = ["ffmpeg", "python3", "yt-dlp", "nodejs_22", "deno"]
 
 [phases.build]
 cmds = ["npm run build"]
 
 [start]
 cmd = "npm run start"
+

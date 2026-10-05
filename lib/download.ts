@@ -6,6 +6,12 @@ import { spawn } from "node:child_process";
 import { ErrorCode } from "@/lib/errors";
 import { getYtDlpPath, getFfmpegPath, getFfprobePath } from "@/lib/binaries";
 import { createRequestCookieFile, getProxyUrl, convertToNetscapeCookies, areCookiesConfigured } from "@/lib/cookies";
+import {
+  getJsRuntimeArgs,
+  getClientStrategies,
+  isRetryableYtDlpFailure,
+  getResilienceArgs,
+} from "@/lib/ytdlp";
 
 export type DownloadType = "video" | "audio";
 export type VideoQuality =
@@ -665,16 +671,13 @@ export async function executeDownload(
       "--no-warnings",
       "--no-progress",
       "--no-part",
-      "--js-runtimes",
-      "node",
+      ...getJsRuntimeArgs(),
+      ...getResilienceArgs(),
       "--sleep-requests",
       process.env.YT_DLP_SLEEP_REQUESTS || "1.5",
     ];
 
     const proxy = getProxyUrl();
-    if (proxy) {
-      baseArgs.push("--proxy", proxy);
-    }
 
     const { cookiePath, cleanup: cleanupCookie } = await createRequestCookieFile();
 
@@ -817,31 +820,43 @@ export async function executeDownload(
       });
     };
 
-    let runResult: { code: number | null; outputBuffer: string; timedOut: boolean; aborted: boolean };
+    let runResult: { code: number | null; outputBuffer: string; timedOut: boolean; aborted: boolean } = {
+      code: 1,
+      outputBuffer: "No download strategy was executed.",
+      timedOut: false,
+      aborted: false,
+    };
     try {
-      const primaryClient = process.env.YOUTUBE_PLAYER_CLIENT || "visionos,android,mweb";
-      runResult = await runYtDlpProcess(buildYtDlpArgs(primaryClient, true));
+      // Ordered PO-token-free client strategies (see lib/ytdlp.ts for the 403 root cause)
+      const strategies = getClientStrategies(Boolean(cookiePath));
+      for (let i = 0; i < strategies.length; i++) {
+        const strategy = strategies[i];
 
-      // Fallback 1: If failed with cookies, retry without cookies
-      if (
-        runResult.code !== 0 &&
-        !runResult.timedOut &&
-        !runResult.aborted &&
-        cookiePath
-      ) {
-        console.warn(`[PullMeta Download] Attempt with cookies failed (exit ${runResult.code}). Retrying without cookies...`);
-        runResult = await runYtDlpProcess(buildYtDlpArgs(primaryClient, false));
-      }
+        // Remove partial/leftover files from a previous failed attempt
+        if (i > 0) {
+          const leftovers = await fs.promises.readdir(tempDir).catch(() => [] as string[]);
+          await Promise.all(
+            leftovers.map((f) => fs.promises.rm(path.join(tempDir, f), { force: true, recursive: true }).catch(() => {}))
+          );
+        }
 
-      // Fallback 2: If failed with custom/mobile clients, retry with default web client
-      if (
-        runResult.code !== 0 &&
-        !runResult.timedOut &&
-        !runResult.aborted &&
-        !process.env.YOUTUBE_PLAYER_CLIENT
-      ) {
-        console.warn(`[PullMeta Download] Attempt with mobile clients failed. Retrying with default client...`);
-        runResult = await runYtDlpProcess(buildYtDlpArgs(undefined, false));
+        runResult = await runYtDlpProcess(buildYtDlpArgs(strategy.playerClient, strategy.useCookies));
+
+        if (runResult.code === 0 || runResult.timedOut || runResult.aborted) {
+          if (runResult.code === 0 && i > 0) {
+            console.log(`[PullMeta Download] Succeeded with strategy "${strategy.label}".`);
+          }
+          break;
+        }
+
+        const lastLine = runResult.outputBuffer.trim().split("\n").pop() || "";
+        console.warn(
+          `[PullMeta Download] Strategy "${strategy.label}" failed (exit ${runResult.code}): ${lastLine.slice(0, 300)}`
+        );
+
+        if (!isRetryableYtDlpFailure(runResult.outputBuffer)) {
+          break;
+        }
       }
     } finally {
       await cleanupCookie().catch(() => {});
@@ -904,6 +919,16 @@ export async function executeDownload(
         throw new DownloadError(
           "DOWNLOAD_RATE_LIMITED",
           "This video is temporarily unavailable due to high demand on YouTube. Please try again in a few minutes."
+        );
+      }
+
+      if (lower.includes("http error 403") || lower.includes("403: forbidden")) {
+        console.error(
+          `[YouTube 403 Forbidden after all strategies] Server IP may be flagged; consider refreshing YOUTUBE_COOKIES or setting PROXY_URL. Details: ${runResult.outputBuffer.slice(-800)}`
+        );
+        throw new DownloadError(
+          "DOWNLOAD_UNAVAILABLE",
+          "YouTube temporarily refused this download from our server. Please try again in a few minutes or pick a different quality."
         );
       }
 

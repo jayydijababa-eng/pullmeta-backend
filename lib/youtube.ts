@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { getYtDlpPath } from "@/lib/binaries";
 import { createRequestCookieFile, getProxyUrl } from "@/lib/cookies";
+import { getJsRuntimeArgs, getClientStrategies } from "@/lib/ytdlp";
 import { cache } from "@/lib/cache";
 
 export interface ThumbnailItem {
@@ -251,7 +252,6 @@ export async function probeVideoFormats(
       return getFallbackFormatOptions();
     }
 
-    const ytClients = process.env.YOUTUBE_PLAYER_CLIENT || "visionos,android,mweb";
     const proxy = getProxyUrl();
     const { cookiePath, cleanup } = await createRequestCookieFile();
     cleanupCookie = cleanup;
@@ -261,8 +261,7 @@ export async function probeVideoFormats(
         "--dump-json",
         "--no-playlist",
         "--skip-download",
-        "--js-runtimes",
-        "node",
+        ...getJsRuntimeArgs(),
       ];
       if (proxy) {
         runArgs.push("--proxy", proxy);
@@ -320,20 +319,19 @@ export async function probeVideoFormats(
       });
     };
 
-    let rawJson: string;
-    try {
-      rawJson = await runProbeProcess(buildProbeArgs(true, ytClients));
-    } catch (primaryErr) {
-      if (cookiePath) {
-        // Fallback without cookies
-        try {
-          rawJson = await runProbeProcess(buildProbeArgs(false, undefined));
-        } catch {
-          throw primaryErr;
-        }
-      } else {
-        throw primaryErr;
+    // Try PO-token-free strategies (max 3 to keep metadata responses fast)
+    let rawJson = "";
+    let lastErr: unknown = null;
+    for (const strategy of getClientStrategies(Boolean(cookiePath)).slice(0, 3)) {
+      try {
+        rawJson = await runProbeProcess(buildProbeArgs(strategy.useCookies, strategy.playerClient));
+        break;
+      } catch (err) {
+        lastErr = err;
       }
+    }
+    if (!rawJson) {
+      throw lastErr || new Error("Format probe failed");
     }
 
     const parsed = JSON.parse(rawJson);

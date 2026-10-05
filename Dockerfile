@@ -1,9 +1,16 @@
-# PullMeta Backend - Dockerfile for Render, Hugging Face Spaces & Container Hosting
-# Includes Node.js 20, Python 3, FFmpeg, and yt-dlp
+# PullMeta Backend - Dockerfile for Railway, Render, Hugging Face Spaces & Container Hosting
+# Includes Node.js 22, Deno, Python 3, FFmpeg, and yt-dlp
+#
+# Why Node 22 + Deno: yt-dlp must solve YouTube's JavaScript challenges with an external
+# JS runtime (EJS). Supported runtimes are Deno >= 2.3 (recommended) or Node >= 22.
+# Node 20 is NOT supported -> challenges go unsolved -> "HTTP Error 403: Forbidden".
 
-FROM node:20-bookworm-slim
+# Official Deno binary (used only as a copy source)
+FROM denoland/deno:bin AS deno
 
-# Install system dependencies: ffmpeg, python3, curl, ca-certificates
+FROM node:22-bookworm-slim
+
+# Install system dependencies: ffmpeg, python3 (yt-dlp zipimport binary), curl, ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
@@ -11,20 +18,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Install the latest standalone yt-dlp release directly from upstream GitHub
-RUN curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
- && chmod a+rx /usr/local/bin/yt-dlp \
- && /usr/local/bin/yt-dlp --version
+# Deno JS runtime for yt-dlp EJS challenge solving
+COPY --from=deno /deno /usr/local/bin/deno
+RUN deno --version
 
-# The official node:20 image already provides the user 'node' with UID 1000
+# The official node image already provides the user 'node' with UID 1000
 USER node
 ENV HOME=/home/node \
-    PATH=/home/node/.local/bin:$PATH \
+    PATH=/home/node/bin:/home/node/.local/bin:$PATH \
+    YT_DLP_PATH=/home/node/bin/yt-dlp \
+    DENO_DIR=/home/node/.cache/deno \
     PORT=10000 \
     HOSTNAME=0.0.0.0 \
     MAX_FILE_SIZE_BYTES=5368709120 \
     DOWNLOAD_TIMEOUT_MS=600000 \
     MAX_CONCURRENT_DOWNLOADS=3
+
+# Install latest yt-dlp into a user-owned folder so the server can self-update it at startup
+# (YouTube changes frequently; a stale yt-dlp is the #1 cause of download failures).
+# Bump YTDLP_CACHE_BUST to force a fresh download on rebuild.
+ARG YTDLP_CACHE_BUST=2026-10-05
+RUN mkdir -p /home/node/bin \
+ && curl -sSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /home/node/bin/yt-dlp \
+ && chmod a+rx /home/node/bin/yt-dlp \
+ && /home/node/bin/yt-dlp --version
 
 WORKDIR /home/node/app
 

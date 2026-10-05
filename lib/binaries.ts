@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import zlib from "node:zlib";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 let cachedYtDlpPath: string | null = null;
 let cachedFfmpegPath: string | null = null;
@@ -285,6 +285,48 @@ export async function getFfprobePath(): Promise<string | null> {
   }
 
   return null;
+}
+
+/**
+ * Runs `yt-dlp -U` in the background (non-blocking) so the extractor stays current with
+ * YouTube changes between deploys. Disable with YT_DLP_AUTO_UPDATE=false.
+ * Only works when the binary is writable by the server user (see Dockerfile).
+ */
+export async function autoUpdateYtDlp(): Promise<void> {
+  if (process.env.YT_DLP_AUTO_UPDATE === "false") return;
+  if (process.env.NODE_ENV !== "production" && process.env.YT_DLP_AUTO_UPDATE !== "true") return;
+
+  const ytDlp = await getYtDlpPath().catch(() => null);
+  if (!ytDlp || !(ytDlp.includes("/") || ytDlp.includes("\\"))) return;
+
+  try {
+    fs.accessSync(ytDlp, fs.constants.W_OK);
+  } catch {
+    console.warn(`[yt-dlp Update] Skipped: ${ytDlp} is not writable by the server user.`);
+    return;
+  }
+
+  const channel = process.env.YT_DLP_UPDATE_CHANNEL || "stable";
+  const child = spawn(ytDlp, ["--update-to", channel], { windowsHide: true });
+  let out = "";
+  child.stdout?.on("data", (c: Buffer) => (out += c.toString("utf-8")));
+  child.stderr?.on("data", (c: Buffer) => (out += c.toString("utf-8")));
+  const timer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // ignore
+    }
+  }, 90000);
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    const summary = out.trim().split("\n").pop() || "";
+    console.log(`[yt-dlp Update] exit ${code}: ${summary.slice(0, 200)}`);
+  });
+  child.on("error", (err) => {
+    clearTimeout(timer);
+    console.warn(`[yt-dlp Update] Failed to start: ${err.message}`);
+  });
 }
 
 /**

@@ -25,7 +25,7 @@ PullMeta Backend is a dedicated, **YouTube-only** media processing engine design
 - **Language:** TypeScript 5 (Strict Mode)
 - **Media Engine:** `yt-dlp` (Latest upstream standalone release)
 - **Audio/Video Transcoder:** `ffmpeg` & `ffprobe`
-- **JavaScript Challenge Solver:** Node.js (`--js-runtimes node`)
+- **JavaScript Challenge Solver:** Deno (default) + Node.js 22 (`--js-runtimes`). Node 20 is NOT supported by yt-dlp EJS.
 - **Testing & Quality:** Vitest 3, TypeScript compiler (`tsc --noEmit`)
 - **Deployment:** Railway / Docker (`node:20-bookworm-slim`)
 
@@ -71,7 +71,7 @@ npm run lint
 | :--- | :--- | :--- | :--- |
 | `YOUTUBE_COOKIES` | Optional | *None* | YouTube authentication cookies in Netscape `cookies.txt` or JSON array format. Bypasses datacenter bot checks on cloud servers. |
 | `PROXY_URL` | Optional | *None* | Optional HTTP/HTTPS/SOCKS5 proxy URL (e.g. `http://user:pass@proxy.example.com:8080`). Routed directly to yt-dlp. |
-| `YOUTUBE_PLAYER_CLIENT` | Optional | `visionos,android,mweb` | Client identifiers passed to yt-dlp extractor args. `visionos,android,mweb` bypasses web JS challenges out-of-the-box. |
+| `YOUTUBE_PLAYER_CLIENT` | Optional | *(empty)* | Leave empty so yt-dlp picks its defaults. Never use `android`, `ios` or `mweb` (require PO token, cause HTTP 403). |
 | `PORT` | Optional | `4000` | Port on which the backend server listens (dynamically set by Railway/Render). |
 | `NODE_ENV` | Optional | `development` | Server runtime environment (`production` or `development`). |
 | `NEXT_PUBLIC_APP_URL` | Optional | `http://localhost:3000` | Origin URL of the frontend application allowed for CORS requests. |
@@ -131,7 +131,7 @@ To bypass YouTube's datacenter bot protection reliably on cloud servers, provide
 - **Cause:** YouTube actively monitors IP ranges assigned to major cloud hosting providers (AWS, GCP, Railway, DigitalOcean, Hetzner). When requests originate from datacenter subnets using unauthenticated web clients, YouTube returns a challenge: `Sign in to confirm you're not a bot`.
 - **Resolution:**
   1. Ensure `YOUTUBE_COOKIES` is configured in Railway with fresh cookies exported from an incognito session.
-  2. PullMeta automatically sets `YOUTUBE_PLAYER_CLIENT=visionos,android,mweb` and `--js-runtimes node`, which avoids web challenges by default.
+  2. PullMeta lets yt-dlp choose PO-token-free clients and falls back to `tv,web_safari` and `android_vr,web_embedded`, with Deno/Node 22 solving JS challenges.
   3. If cloud hosting IP ranges become aggressively blacklisted, configure `PROXY_URL` with a residential proxy provider.
 
 ### "Rate limit exceeded" Error

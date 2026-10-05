@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { getYtDlpPath, getFfmpegPath } from "@/lib/binaries";
 import { areCookiesConfigured, isProxyConfigured } from "@/lib/cookies";
+import { getJsRuntimeArgs } from "@/lib/ytdlp";
 
 export const runtime = "nodejs";
 
@@ -34,6 +35,10 @@ export async function GET(req: NextRequest) {
       proxyConfigured: isProxyConfigured(),
       ytDlpVersion,
       hasFfmpeg: Boolean(ffmpegPath),
+      nodeVersion: process.versions.node,
+      jsRuntimes: getJsRuntimeArgs()
+        .filter((_, i) => i % 2 === 1)
+        .map((r) => r.split(":")[0]),
     },
     {
       status: 200,
