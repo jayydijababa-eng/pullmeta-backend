@@ -10,6 +10,7 @@ import {
   getJsRuntimeArgs,
   getClientStrategies,
   isRetryableYtDlpFailure,
+  hasSupportedJsRuntime,
   getResilienceArgs,
 } from "@/lib/ytdlp";
 
@@ -289,7 +290,7 @@ export function getVideoFormatSelector(
       // 2. H.264 (avc1) video codec
       // 3. AAC (m4a) audio codec
       // If H.264 is unavailable at targetRes (e.g. 4K VP9), best video stream is downloaded and converted via transcode fallback
-      selector: "bv*+ba/b[vcodec!=none]",
+      selector: `bv*[height<=${targetRes}][vcodec~="^avc1"]+ba/bv*[height<=${targetRes}]+ba/bv*+ba`,
     };
   }
   return {
@@ -640,13 +641,19 @@ export async function executeDownload(
   const {
     videoId,
     type = "video",
-    quality = "best",
+    quality: initialQuality = "best",
     format = "mp3",
     audioQuality = "best",
     timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
     maxSizeBytes = DEFAULT_MAX_FILE_SIZE,
     abortSignal,
   } = options;
+
+  let quality = initialQuality;
+  const QUALITY_CHAIN = [initialQuality.toLowerCase()];
+  const allQ = ["2160p","1440p","1080p","720p","480p","360p","240p","144p"];
+  const qIdx = allQ.indexOf(initialQuality.toLowerCase());
+  if (qIdx >= 0) { QUALITY_CHAIN.push(...allQ.slice(qIdx + 1)); }
 
   const acquired = await acquireDownloadSlot(15000, abortSignal);
   if (!acquired) {
@@ -827,6 +834,17 @@ export async function executeDownload(
       aborted: false,
     };
     try {
+      // Quality-downgrade retry loop
+      for (let qa = 0; qa < QUALITY_CHAIN.length; qa++) {
+        quality = QUALITY_CHAIN[qa];
+        if (qa > 0) {
+          console.log("[PullMeta Download] Format-downgrade: trying " + quality + "...");
+          const leftovers = await fs.promises.readdir(tempDir).catch(() => []);
+          await Promise.all(
+            leftovers.map((f) => fs.promises.rm(path.join(tempDir, f), { force: true, recursive: true }).catch(() => {}))
+          );
+        }
+
       // Ordered PO-token-free client strategies (see lib/ytdlp.ts for the 403 root cause)
       const strategies = getClientStrategies(Boolean(cookiePath));
       for (let i = 0; i < strategies.length; i++) {
@@ -857,6 +875,8 @@ export async function executeDownload(
         if (!isRetryableYtDlpFailure(runResult.outputBuffer)) {
           break;
         }
+      }
+      if (runResult.code === 0) break;
       }
     } finally {
       await cleanupCookie().catch(() => {});

@@ -118,6 +118,15 @@ export function getClientStrategies(hasCookies: boolean): ClientStrategy[] {
     strategies.push({ playerClient: override, useCookies: hasCookies, label: `override(${override})` });
   }
 
+
+  // Try web client when JS runtime available (solves PO tokens for proper DASH H.264)
+  if (hasSupportedJsRuntime()) {
+    if (hasCookies) {
+      strategies.push({ playerClient: 'web', useCookies: true, label: 'web+cookies' });
+    } else {
+      strategies.push({ playerClient: 'web', useCookies: false, label: 'web+no-cookies' });
+    }
+  }
   if (hasCookies) {
     strategies.push({ useCookies: true, label: "default+cookies" });
   }
