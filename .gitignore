@@ -19,6 +19,13 @@ dist/
 .env.production
 .env.test
 !.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*secret*.json
+service-account*.json
+credentials.json
 
 # Cookies & Temporary Auth Data
 cookies.txt
